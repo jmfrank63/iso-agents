@@ -3,15 +3,15 @@
 **Project:** iso-agents — see [PROJECT.md](PROJECT.md)
 **Core value:** The full agent loop — generate → type-check in-isolate → execute in-sandbox → feed errors back → fix — demonstrably runs end-to-end inside workerd, observable via HTTP with per-step timings.
 **Milestone:** v1 (roadmap defined 2026-10-11 — see [ROADMAP.md](ROADMAP.md))
-**Last updated:** 2026-10-11 after roadmap creation
+**Last updated:** 2026-10-11 after Phase 1 execution
 
 ## Current Focus
 
-**Phase 1: Worker scaffold + health endpoint** — not started
+**Phase 2: In-isolate type-check core** — not started
 
 ## Position
 
-- Phase 1 — Worker scaffold + health endpoint: not started
+- Phase 1 — Worker scaffold + health endpoint: **complete (DELIVERED — live-verified, 8/8 in-workerd tests)**
 - Phase 2 — In-isolate type-check core: not started
 - Phase 3 — QuickJS-WASM sandbox executor: not started
 - Phase 4 — Agent loop + LLM + observability: not started
@@ -28,13 +28,15 @@ Binding on planning (source: [research/SUMMARY.md](research/SUMMARY.md)):
 - **Ordering hard requirement** — sandbox timeout/memory limits must exist before the agent loop's first real (non-fixture) run; hence Phase 3 before Phase 4.
 - **In-memory run store only** — no DO/KV/persistence; runs die with the isolate and 404s say so.
 
-## Recent Decisions
-- workerd freezes Date.now() in global scope — lazy-memoize boot/instance values (fixed in 01-01)
-- Phase 2 must run with no_nodejs_compat flags active; typescript pinned exactly 6.0.3
+## Recent Decisions (Phase 1)
+
+- workerd freezes `Date.now()` in global scope (reads ~0) — lazy-memoize boot/instance values on first request (fixed in 01-01, commit 861c634)
+- `no_nodejs_compat` + `no_nodejs_compat_v2` both set; healthz `workerd`/`userAgent` = `navigator.userAgent` (no in-band version API)
+- typescript pinned exactly 6.0.3 in package.json
 
 ## Next Actions
 
-1. Run `/gsd-plan-phase 1`
+1. Run `/gsd-discuss-phase 2 --auto` → `/gsd-plan-phase 2 --auto` → `/gsd-execute-phase 2 --auto`
 
 ## Blockers
 
