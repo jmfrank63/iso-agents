@@ -10,8 +10,20 @@ export interface Env {
 }
 
 const COMPATIBILITY_DATE = "2026-09-01";
-const BOOT_MS = Date.now();
-const INSTANCE_ID = crypto.randomUUID(); // per isolate boot; surfaces restarts
+// Per isolate; surfaces restarts. workerd freezes Date.now() in global scope
+// (module init reads ~0), so boot time is captured lazily on first request
+// and memoized for the isolate's lifetime.
+let bootMs: number | undefined;
+function bootMsOnce(): number {
+  return (bootMs ??= Date.now());
+}
+// Per isolate boot; surfaces restarts. workerd disallows random-value
+// generation in global scope, so the id is generated lazily on first request
+// and memoized for the isolate's lifetime.
+let instanceId: string | undefined;
+function instanceIdOnce(): string {
+  return (instanceId ??= crypto.randomUUID());
+}
 
 type ErrorCode =
   | "bad_request"
@@ -72,8 +84,8 @@ export function getRuntimeInfo() {
     compatibility_date: COMPATIBILITY_DATE,
     typechecker: "unloaded", // Phase 2: pinned pure-JS typescript version
     sandbox: "unloaded", // Phase 3: quickjs variant id
-    instanceId: INSTANCE_ID,
-    uptime_s: Math.floor((Date.now() - BOOT_MS) / 1000),
+    instanceId: instanceIdOnce(),
+    uptime_s: Math.floor((Date.now() - bootMsOnce()) / 1000),
     userAgent: navigator.userAgent, // raw signal behind the `workerd` best-effort above
   };
 }
@@ -129,7 +141,7 @@ export default {
       const status = err instanceof HttpError ? err.status : 500;
       const code = err instanceof HttpError ? err.code : "internal";
       const message = err instanceof Error ? err.message : String(err);
-      const detail = err instanceof HttpError ? err.detail : { instanceId: INSTANCE_ID };
+      const detail = err instanceof HttpError ? err.detail : { instanceId: instanceIdOnce() };
       console.error(`[worker] ${label} failed:`, err);
       return respond(fail(status, code, message, detail));
     }
