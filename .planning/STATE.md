@@ -28,6 +28,10 @@ Binding on planning (source: [research/SUMMARY.md](research/SUMMARY.md)):
 - **Ordering hard requirement** — sandbox timeout/memory limits must exist before the agent loop's first real (non-fixture) run; hence Phase 3 before Phase 4.
 - **In-memory run store only** — no DO/KV/persistence; runs die with the isolate and 404s say so.
 
+## Recent Decisions
+- workerd freezes Date.now() in global scope — lazy-memoize boot/instance values (fixed in 01-01)
+- Phase 2 must run with no_nodejs_compat flags active; typescript pinned exactly 6.0.3
+
 ## Next Actions
 
 1. Run `/gsd-plan-phase 1`
