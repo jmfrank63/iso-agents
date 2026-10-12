@@ -6,10 +6,11 @@
     "dev": "wrangler dev",
     "postinstall": "node scripts/copy-quickjs-wasm.mjs",
     "test": "vitest run",
-    "test:live": "node scripts/test-typecheck-live.mjs",
+    "test:live": "node scripts/test-typecheck-live.mjs && node scripts/test-sandbox-live.mjs",
     "test:watch": "vitest",
     "check": "tsc --noEmit",
-    "bundle:check": "wrangler deploy --dry-run --outdir dist-bundle"
+    "bundle:check": "wrangler deploy --dry-run --outdir dist-bundle",
+    "gate:no-host-eval": "! grep -rnE '\\beval\\(|new Function\\(' src/"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.0",
