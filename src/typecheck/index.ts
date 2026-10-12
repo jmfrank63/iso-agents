@@ -49,7 +49,9 @@ function assertCompilerIdentity(): void {
   }
 }
 
-function mapDiagnostic(d: ts.Diagnostic): TypecheckDiagnostic {
+// Exported for src/typecheck/transpile.ts (Phase 4): transpile diagnostics
+// share the exact {code,message,line,column,file,category} shape.
+export function mapDiagnostic(d: ts.Diagnostic): TypecheckDiagnostic {
   const loc =
     d.file !== undefined && d.start !== undefined
       ? ts.getLineAndCharacterOfPosition(d.file, d.start) // 0-based
