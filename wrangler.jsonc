@@ -10,7 +10,9 @@
   // silently stubbing through unenv. BOTH flags are the complete opt-out.
   "compatibility_flags": ["no_nodejs_compat", "no_nodejs_compat_v2"],
   // Locally inert; correct production shape. Schema: {enabled, head_sampling_rate, ...}
-  "observability": { "enabled": true }
-  // Phase 2 will append (lib .d.ts as text for the in-isolate checker):
-  // "rules": [{ "type": "Text", "globs": ["**/*.d.ts"] }]
+  "observability": { "enabled": true },
+  // Lib .d.ts files ship as Text modules for the in-isolate checker (02-01).
+  // fallthrough is REQUIRED: a custom Text rule without it silently replaces
+  // wrangler's default **/*.txt|html|sql rule (wrangler parseRules behavior).
+  "rules": [{ "type": "Text", "globs": ["**/*.d.ts"], "fallthrough": true }]
 }
