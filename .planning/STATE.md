@@ -7,13 +7,13 @@
 
 ## Current Focus
 
-**Phase 3: QuickJS-WASM sandbox executor** — not started
+**Phase 4: Agent loop + LLM + observability** — not started
 
 ## Position
 
 - Phase 1 — Worker scaffold + health endpoint: **complete (DELIVERED — live-verified, 8/8 in-workerd tests)**
 - Phase 2 — In-isolate type-check core: **complete (DELIVERED — 42/42 live harness; TS2322@1:7 in 191ms cold, 52ms warm in-isolate)**
-- Phase 3 — QuickJS-WASM sandbox executor: not started
+- Phase 3 — QuickJS-WASM sandbox executor: **complete (DELIVERED — 82/82 live harness; while(true)→structured timeout 532ms; no crash-poisoning; zero host eval)**
 - Phase 4 — Agent loop + LLM + observability: not started
 
 ## Recent Decisions
@@ -27,6 +27,12 @@ Binding on planning (source: [research/SUMMARY.md](research/SUMMARY.md)):
 - **Fully hand-rolled CompilerHost** — never `ts.sys` / `ts.createCompilerHost`; lib `.d.ts` inlined as bundled text; lib SourceFiles memoized (128 MB shared JS+WASM isolate).
 - **Ordering hard requirement** — sandbox timeout/memory limits must exist before the agent loop's first real (non-fixture) run; hence Phase 3 before Phase 4.
 - **In-memory run store only** — no DO/KV/persistence; runs die with the isolate and 404s say so.
+
+## Recent Decisions (Phase 3)
+- singlefile QuickJS variant is DEAD on workerd (Wasm code generation disallowed) — wasmfile variant + newVariant({wasmModule}) + committed 491KB .wasm (CompiledWasm default rule)
+- stack limit 64KiB (hard cap 128KiB): 1MiB caused uncatchable RangeError + dispose-abort poisoning; ≤128KiB overflows are catchable InternalError
+- performance.now() ADVANCES inside the sync guest — wall-clock interrupt handler is primary, op-count backstop secondary
+- VmFunctionImplementation has NO leading this handle (FFI applies guest args) — type-level this-param only
 
 ## Recent Decisions (Phase 2)
 - vitest plugin transport rejects the 8.8MB typescript module (WS 1009) — worker-dispatching tests live in `npm run test:live` (wrangler dev harness), vitest keeps small-module specs only
