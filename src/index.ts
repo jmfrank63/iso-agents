@@ -1,4 +1,5 @@
 import { runRegistry } from "./runs";
+import { getTypechecker, getTypecheckerIdentity } from "./typecheck";
 
 export interface Env {
   LLM_PROVIDER?: string;
@@ -75,6 +76,43 @@ async function parseJsonBody(request: Request): Promise<unknown> {
   }
 }
 
+interface TypecheckBody {
+  files?: Record<string, unknown>;
+}
+
+// TYPE-02 early HTTP path: one wall-ms check per request (TYPE-03's N-run
+// stats land in Phase 4). Snippet names are VFS-rooted: "guest.ts" is
+// checked as "/guest.ts". Responds 200 with data.ok=false when the checked
+// code has errors — the check itself succeeded.
+async function handleTypecheck(request: Request): Promise<Response> {
+  const body = (await parseJsonBody(request)) as TypecheckBody | null;
+  if (
+    body === null ||
+    typeof body !== "object" ||
+    body.files === undefined ||
+    body.files === null ||
+    typeof body.files !== "object"
+  ) {
+    throw new HttpError(400, "bad_request", "body must be JSON {files: {name: content}}");
+  }
+  const entries = Object.entries(body.files);
+  if (entries.length === 0) {
+    throw new HttpError(400, "bad_request", "files must contain at least one entry");
+  }
+  const bad = entries.find(([, content]) => typeof content !== "string");
+  if (bad !== undefined) {
+    throw new HttpError(400, "bad_request", `files.${bad[0]} must be a string`);
+  }
+  const files = new Map<string, string>(
+    entries.map(([name, content]): [string, string] => [
+      name.startsWith("/") ? name : `/${name}`,
+      content as string,
+    ]),
+  );
+  const result = await getTypechecker().check(files);
+  return json({ ok: true, data: result }, 200);
+}
+
 // Lazy-init seam: Phases 2-3 fill typechecker/sandbox identities; /healthz stays fast.
 export function getRuntimeInfo() {
   return {
@@ -82,7 +120,7 @@ export function getRuntimeInfo() {
     // navigator.userAgent is the only in-band signal (tests assert non-empty).
     workerd: navigator.userAgent,
     compatibility_date: COMPATIBILITY_DATE,
-    typechecker: "unloaded", // Phase 2: pinned pure-JS typescript version
+    typechecker: getTypecheckerIdentity(), // flips after first checker use (lazy singleton)
     sandbox: "unloaded", // Phase 3: quickjs variant id
     instanceId: instanceIdOnce(),
     uptime_s: Math.floor((Date.now() - bootMsOnce()) / 1000),
@@ -110,8 +148,9 @@ export default {
         case "GET /healthz":
           return respond(json({ ok: true, data: { status: "ok", runtime: getRuntimeInfo() } }, 200));
         case "POST /agent/run":
-        case "POST /typecheck":
           return respond(fail(501, "not_implemented", `${label} is registered but not implemented yet`));
+        case "POST /typecheck":
+          return respond(await handleTypecheck(request));
         default: {
           if (method === "GET" && pathname.startsWith("/agent/run/")) {
             const id = pathname.slice("/agent/run/".length);
