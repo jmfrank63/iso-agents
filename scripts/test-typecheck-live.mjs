@@ -1,13 +1,18 @@
-// Live in-workerd verification harness for the Phase 2 checker (`npm run test:live`).
+// Live in-workerd verification harness for the Phase 2 checker + Phase 4
+// TYPE-03 stats (first leg of `npm run test:live`).
 //
 // Why this exists: the @cloudflare/vitest-plugin transport crashes workerd once the
 // 8.8 MB typescript module enters the worker graph (WebSocket 1009 "Message is too
 // large" — review issue 1, reproduced 4x), so NO vitest spec may pull the typecheck
 // graph. Every typecheck/route/flip expectation runs here instead, against real
-// workerd via `wrangler dev` — the transport research verified with the full 11 MB
-// bundle. Boots CI=true wrangler dev on a free port, polls /healthz, POSTs the
-// red/green/lib-sanity/memoization snippets, asserts exact JSON outcomes (incl.
-// TS2322 at 1-based column 7), kills wrangler, and exits non-zero on any failure.
+// workerd via `wrangler dev`.
+//
+// Phase 4 migration: POST /typecheck now returns N-run latency STATS
+// {runs, results: [{run, ms, ok}], minMs, medianMs, meanMs, coldMs}; the old
+// per-diagnostic exactness (TS2322 at 1-based column 7) RE-HOMED to
+// scripts/test-agent-live.mjs — the agent loop's transcript carries real
+// diagnostics (slugify iteration 1: TS2322 at /guest.ts:2:9). The old
+// `501 POST /agent/run` probe became the wired route's 400-validation probes.
 import { spawn, execSync } from "node:child_process";
 import { createServer } from "node:net";
 
@@ -21,8 +26,8 @@ function assert(cond, label, detail) {
   }
 }
 
-// Guest snippets — byte-identical to the originally planned vitest cases, so every
-// expected value maps 1:1 (see the mapping table in 02-02-PLAN.md).
+// Guest snippets — the Phase 2 semantics are unchanged, only the response
+// shape around them moved to stats.
 const GREEN = "export const answer: number = 42;\n";
 const RED = 'const n: number = "not a number";\nconsole.log(n);\n';
 const LIB_GUEST = `
@@ -107,7 +112,7 @@ try {
     throw new Error(`wrangler dev did not serve /healthz within 60s. Log tail:\n${wranglerLog.slice(-2000)}`);
   }
 
-  // -- Phase 1 healthz coverage, relocated from test/healthz.spec.ts (issue-1 fix) --
+  // -- Phase 1 healthz coverage (unchanged; `agent` key asserted by the agent harness) --
   assert(healthz.status === 200, "healthz: HTTP 200");
   assert(healthz.json.ok === true && healthz.json.data.status === "ok", "healthz: ok envelope with status ok");
   const runtime = healthz.json.data.runtime;
@@ -119,7 +124,7 @@ try {
   assert(typeof runtime.instanceId === "string" && runtime.instanceId.length === 36, "healthz: instanceId is a 36-char uuid");
   assert(typeof runtime.uptime_s === "number", "healthz: uptime_s is a number");
 
-  // -- Phase 1 route coverage (unchanged semantics post-wiring) --
+  // -- Phase 1 route coverage --
   const nf = await get("/nope");
   assert(nf.status === 404 && nf.json.error.code === "not_found", "404 unknown route returns not_found");
   const nfr = await get("/agent/run/00000000-0000-4000-8000-000000000000");
@@ -129,74 +134,66 @@ try {
     del.status === 405 && del.json.error.code === "method_not_allowed" && del.headers.get("allow") === "GET",
     "405 DELETE /healthz returns allow: GET",
   );
-  const unimplemented = await post("/agent/run", "");
-  assert(
-    unimplemented.status === 501 && unimplemented.json.error.code === "not_implemented",
-    "501 POST /agent/run returns not_implemented",
-  );
 
-  // -- Case 1 + 7: green guest / green snippet over the route --
+  // -- Wired agent route: validation probes ONLY (a VALID body would run the
+  // whole loop; that coverage lives in scripts/test-agent-live.mjs) --
+  const noSpec = await post("/agent/run", JSON.stringify({ task: "x" }));
+  assert(noSpec.status === 400 && noSpec.json.error.code === "bad_request", "agent route: missing spec 400 bad_request");
+  const agentMalformed = await post("/agent/run", "{nope");
+  assert(agentMalformed.status === 400 && agentMalformed.json.error.code === "bad_request", "agent route: malformed JSON 400 bad_request");
+
+  // -- Green guest as an N-run benchmark (default runs = 5) --
   const green = await post("/typecheck", JSON.stringify({ files: { "guest.ts": GREEN } }));
   assert(green.status === 200, "green: HTTP 200 envelope");
   assert(green.json.ok === true, "green: envelope ok is true");
-  assert(green.json.data.ok === true, "green: data.ok is true");
-  assert(green.json.data.diagnostics.length === 0, "green: zero diagnostics");
-  assert(green.json.data.ms > 0 && Number.isFinite(green.json.data.ms), "green: ms is positive and finite");
-
-  // -- Case 2 + 6: red guest exactness / red snippet over the route --
-  const red = await post("/typecheck", JSON.stringify({ files: { "guest.ts": RED } }));
-  assert(red.status === 200, "red: HTTP 200 even though data.ok is false");
-  assert(red.json.ok === true, "red: envelope ok is true");
-  assert(red.json.data.ok === false, "red: data.ok is false");
-  assert(red.json.data.ms > 0, "red: ms is positive");
-  assert(red.json.data.diagnostics.length === 1, "red: exactly one diagnostic");
-  const d = red.json.data.diagnostics[0];
-  assert(d.code === 2322, "red: code is 2322");
+  assert(green.json.data.runs === 5, "green: default runs is 5");
+  assert(green.json.data.results.length === 5, "green: five results");
+  assert(green.json.data.results.every((r) => r.ok === true), "green: every result ok");
+  assert(green.json.data.results.every((r) => r.ms > 0 && Number.isFinite(r.ms)), "green: every ms positive and finite");
+  assert(green.json.data.coldMs === green.json.data.results[0].ms, "green: coldMs is results[0].ms");
+  const greenMax = Math.max(...green.json.data.results.map((r) => r.ms));
   assert(
-    d.message.includes("is not assignable to type 'number'"),
-    "red: message contains is not assignable to type 'number'",
-    d.message,
+    green.json.data.minMs <= green.json.data.medianMs && green.json.data.medianMs <= greenMax,
+    "green: minMs <= medianMs <= maxMs",
   );
-  assert(d.line === 1, "red: 1-based line is 1");
-  assert(d.column === 7, "red: 1-based column is 7 (TS reports the declared name, not the literal)", d.column);
-  assert(d.file === "/guest.ts", "red: file is /guest.ts");
-  assert(d.category === "Error", "red: category is Error");
+  assert(green.json.data.meanMs > 0, "green: meanMs positive");
 
-  // -- Case 3: lib closure + guest globals --
-  const lib = await post("/typecheck", JSON.stringify({ files: { "guest.ts": LIB_GUEST } }));
+  // -- Red guest: red/green flag on the stats shape (diagnostic exactness
+  // re-homed to the agent harness: slugify iter1 TS2322 at /guest.ts:2:9) --
+  const red = await post("/typecheck", JSON.stringify({ files: { "guest.ts": RED }, runs: 1 }));
+  assert(red.status === 200, "red: HTTP 200 even though the snippet has errors");
+  assert(red.json.ok === true, "red: envelope ok is true");
+  assert(red.json.data.results.length === 1 && red.json.data.results[0].ok === false, "red: single run flags ok=false");
+  assert(red.json.data.results[0].ms > 0, "red: results[0].ms positive");
+
+  // -- Lib closure + guest globals still check clean (2 runs) --
+  const lib = await post("/typecheck", JSON.stringify({ files: { "guest.ts": LIB_GUEST }, runs: 2 }));
+  assert(lib.status === 200 && lib.json.ok === true, "lib-sanity: HTTP 200 ok envelope");
   assert(
-    lib.status === 200 && lib.json.ok === true && lib.json.data.ok === true,
+    lib.json.data.results.length === 2 && lib.json.data.results.every((r) => r.ok === true),
     "lib-sanity: Map/Promise.all/console guest checks clean",
   );
-  assert(lib.json.data.diagnostics.length === 0, "lib-sanity: zero diagnostics total");
-  assert(
-    lib.json.data.diagnostics.filter((x) => x.file.startsWith("lib.")).length === 0,
-    "lib-sanity: zero diagnostics from lib.* files",
-  );
 
-  // -- Case 4: memoization timing fidelity (same isolate => the checker is warm
-  // by now; the CONTEXT decision calls this a sanity bound, not a cold->warm demo) --
-  const first = await post("/typecheck", JSON.stringify({ files: { "guest.ts": GREEN } }));
-  const second = await post("/typecheck", JSON.stringify({ files: { "guest.ts": GREEN } }));
-  assert(first.json.data.ms > 0 && second.json.data.ms > 0, "memoization: both ms positive");
-  assert(first.json.data.ms < 2000 && second.json.data.ms < 2000, "memoization: both under 2000ms");
-  assert(second.json.data.ms <= first.json.data.ms + 100, "memoization: second <= first + 100ms");
+  // -- Memoization timing fidelity (runs=1 so coldMs IS the single check) --
+  const first = await post("/typecheck", JSON.stringify({ files: { "guest.ts": GREEN }, runs: 1 }));
+  const second = await post("/typecheck", JSON.stringify({ files: { "guest.ts": GREEN }, runs: 1 }));
+  assert(first.json.data.coldMs > 0 && second.json.data.coldMs > 0, "memoization: both coldMs positive");
+  assert(first.json.data.coldMs < 2000 && second.json.data.coldMs < 2000, "memoization: both under 2000ms");
+  assert(second.json.data.coldMs <= first.json.data.coldMs + 100, "memoization: second <= first + 100ms");
 
-  // -- Case 5: seam. HTTP-reachable half only: the locked route contract pins
-  // createTypechecker()'s default "ts" implementation per request, so the harness
-  // asserts that impl's id via the healthz identity below (same expected value the
-  // planned vitest case checked: id contains "6.0.3"). transpile-only SELECTABILITY
-  // is not reachable over HTTP; it is enforced by the tsc-typed Typechecker
-  // interface (npm run check) plus the grep gate:
-  // `grep -c 'new TranspileOnlyTypechecker()' src/typecheck/index.ts` -> 1.
+  // -- TYPE-03 runs validation --
+  const runsZero = await post("/typecheck", JSON.stringify({ files: { "guest.ts": GREEN }, runs: 0 }));
+  assert(runsZero.status === 400 && runsZero.json.error.code === "bad_request", "runs=0: 400 bad_request");
+  const runsGarbage = await post("/typecheck", JSON.stringify({ files: { "guest.ts": GREEN }, runs: "x" }));
+  assert(runsGarbage.status === 400 && runsGarbage.json.error.code === "bad_request", 'runs="x": 400 bad_request');
 
-  // -- Cases 8 + 9: validation --
+  // -- files validation (Phase 2 cases 8+9, unchanged) --
   const empty = await post("/typecheck", JSON.stringify({ files: {} }));
   assert(empty.status === 400 && empty.json.error.code === "bad_request", "empty files object: 400 bad_request");
   const malformed = await post("/typecheck", "{nope");
   assert(malformed.status === 400 && malformed.json.error.code === "bad_request", "malformed JSON body: 400 bad_request");
 
-  // -- Issue-6 fix: 405 GET /typecheck asserts the allow RESPONSE HEADER --
+  // -- 405 GET /typecheck asserts the allow RESPONSE HEADER --
   const notAllowed = await get("/typecheck");
   assert(notAllowed.status === 405, "GET /typecheck: 405 status");
   assert(
@@ -205,7 +202,7 @@ try {
   );
   assert(notAllowed.json.error.code === "method_not_allowed", "GET /typecheck: method_not_allowed error code");
 
-  // -- Case 10: identity flip (also carries case 5's id expectation) --
+  // -- Identity flip (Phase 2 case 10) --
   const flip = await get("/healthz");
   assert(
     flip.status === 200 && flip.json.data.runtime.typechecker === "typescript@6.0.3 (in-isolate)",

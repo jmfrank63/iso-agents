@@ -1,20 +1,38 @@
 import { runRegistry } from "./runs";
 import { getTypechecker, getTypecheckerIdentity } from "./typecheck";
+import { transpileGuest } from "./typecheck/transpile";
 import { getSandboxRuntime } from "./sandbox/runtime";
 import { getSandboxIdentity } from "./sandbox/identity";
+import {
+  createLlmProvider,
+  DEFAULT_LLM_TIMEOUT_MS,
+  getAgentIdentity,
+  type LlmProvider,
+} from "./agent/provider";
+import { MOCK_PROVIDER_ID } from "./agent/mock";
+import { runAgent } from "./agent/loop";
 
 export interface Env {
   LLM_PROVIDER?: string;
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
   LLM_MODEL?: string;
+  LLM_TIMEOUT_MS?: string;
   AGENT_MAX_ITERATIONS?: string;
+  AGENT_RUN_DEADLINE_MS?: string;
+  MOCK_FAIL_AFTER?: string;
   SANDBOX_TIMEOUT_MS?: string;
   SANDBOX_MEMORY_LIMIT_MB?: string;
   SANDBOX_STACK_KB?: string;
 }
 
 const COMPATIBILITY_DATE = "2026-09-01";
+const DEFAULT_MAX_ITERATIONS = 5;
+const MAX_ITERATIONS_CAP = 10;
+const DEFAULT_RUN_DEADLINE_MS = 25000;
+const DEFAULT_BENCH_RUNS = 5;
+const MAX_BENCH_RUNS = 100;
+
 // Per isolate; surfaces restarts. workerd freezes Date.now() in global scope
 // (module init reads ~0), so boot time is captured lazily on first request
 // and memoized for the isolate's lifetime.
@@ -70,8 +88,7 @@ class HttpError extends Error {
   }
 }
 
-// Pre-wired for Phase 2/4 POST routes (400 bad_request on malformed JSON).
-// Phase 1 has no implemented POST body route, so this is unexercised by tests.
+// Pre-wired for POST routes (400 bad_request on malformed JSON).
 async function parseJsonBody(request: Request): Promise<unknown> {
   try {
     return await request.json();
@@ -80,14 +97,23 @@ async function parseJsonBody(request: Request): Promise<unknown> {
   }
 }
 
-interface TypecheckBody {
-  files?: Record<string, unknown>;
+// Phase 1 sandbox limits use this exact shape (src/sandbox/limits.ts).
+function parseOptionalPositiveInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined) return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-// TYPE-02 early HTTP path: one wall-ms check per request (TYPE-03's N-run
-// stats land in Phase 4). Snippet names are VFS-rooted: "guest.ts" is
-// checked as "/guest.ts". Responds 200 with data.ok=false when the checked
-// code has errors — the check itself succeeded.
+interface TypecheckBody {
+  files?: Record<string, unknown>;
+  runs?: unknown;
+}
+
+// TYPE-02 + TYPE-03: N-run latency stats — the tsc-rs benchmark hook. Same
+// checker instance N times per request: results[0].ms is that request's cold
+// run, the rest are warm. `results[].ok` is a research-G2 ADDITION to the
+// CONTEXT stats shape so harnesses keep a red/green assert; per-diagnostic
+// exactness re-homed to scripts/test-agent-live.mjs (agent transcript).
 async function handleTypecheck(request: Request): Promise<Response> {
   const body = (await parseJsonBody(request)) as TypecheckBody | null;
   if (
@@ -97,7 +123,7 @@ async function handleTypecheck(request: Request): Promise<Response> {
     body.files === null ||
     typeof body.files !== "object"
   ) {
-    throw new HttpError(400, "bad_request", "body must be JSON {files: {name: content}}");
+    throw new HttpError(400, "bad_request", "body must be JSON {files: {name: content}, runs?: number}");
   }
   const entries = Object.entries(body.files);
   if (entries.length === 0) {
@@ -107,14 +133,126 @@ async function handleTypecheck(request: Request): Promise<Response> {
   if (bad !== undefined) {
     throw new HttpError(400, "bad_request", `files.${bad[0]} must be a string`);
   }
+  let runs = DEFAULT_BENCH_RUNS;
+  if (body.runs !== undefined) {
+    if (
+      typeof body.runs !== "number" ||
+      !Number.isInteger(body.runs) ||
+      body.runs < 1 ||
+      body.runs > MAX_BENCH_RUNS
+    ) {
+      throw new HttpError(400, "bad_request", `runs must be an integer between 1 and ${MAX_BENCH_RUNS}`);
+    }
+    runs = body.runs;
+  }
   const files = new Map<string, string>(
     entries.map(([name, content]): [string, string] => [
       name.startsWith("/") ? name : `/${name}`,
       content as string,
     ]),
   );
-  const result = await getTypechecker().check(files);
-  return json({ ok: true, data: result }, 200);
+  const checker = getTypechecker();
+  const results: Array<{ run: number; ms: number; ok: boolean }> = [];
+  for (let i = 1; i <= runs; i++) {
+    const r = await checker.check(files);
+    results.push({ run: i, ms: r.ms, ok: r.ok });
+  }
+  // Stats on a sorted COPY; `results` stays in run order (run r == results[r-1]).
+  const sorted = results.map((r) => r.ms).sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const medianMs = sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  const meanMs = sorted.reduce((sum, ms) => sum + ms, 0) / sorted.length;
+  return json(
+    {
+      ok: true,
+      data: {
+        runs,
+        results,
+        minMs: sorted[0],
+        medianMs,
+        meanMs,
+        coldMs: results[0].ms,
+      },
+    },
+    200,
+  );
+}
+
+interface AgentRunBody {
+  task?: unknown;
+  spec?: unknown;
+  maxIterations?: unknown;
+}
+
+// CORE-01/02/04/05 + OBS-01: the SYNCHRONOUS agent loop (CONTEXT — the mock
+// finishes in seconds; async/job polling is out of scope). The provider is
+// built PER REQUEST (mock call-counter state is per-run), the record is
+// created BEFORE the loop and finalized AFTER it, and the response IS the
+// stored record (POST and GET return byte-identical data). An unexpected
+// throw still yields the Phase 1 500 envelope; the record stays `running`
+// (prototype honesty, noted here by design).
+async function handleAgentRun(request: Request, env: Env): Promise<Response> {
+  const body = (await parseJsonBody(request)) as AgentRunBody | null;
+  if (
+    body === null ||
+    typeof body !== "object" ||
+    typeof body.task !== "string" ||
+    body.task.trim() === "" ||
+    typeof body.spec !== "string" ||
+    body.spec.trim() === ""
+  ) {
+    throw new HttpError(
+      400,
+      "bad_request",
+      "body must be JSON {task: string, spec: string, maxIterations?: number 1-10}",
+    );
+  }
+  if (
+    body.maxIterations !== undefined &&
+    (typeof body.maxIterations !== "number" ||
+      !Number.isInteger(body.maxIterations) ||
+      body.maxIterations < 1 ||
+      body.maxIterations > MAX_ITERATIONS_CAP)
+  ) {
+    throw new HttpError(400, "bad_request", `maxIterations must be an integer between 1 and ${MAX_ITERATIONS_CAP}`);
+  }
+  const requested =
+    body.maxIterations !== undefined
+      ? body.maxIterations
+      : parseOptionalPositiveInt(env.AGENT_MAX_ITERATIONS, DEFAULT_MAX_ITERATIONS);
+  let maxIterations = Math.min(Math.max(requested, 1), MAX_ITERATIONS_CAP);
+  const runDeadlineMs = parseOptionalPositiveInt(env.AGENT_RUN_DEADLINE_MS, DEFAULT_RUN_DEADLINE_MS);
+  const llmTimeoutMs = parseOptionalPositiveInt(env.LLM_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS);
+
+  const run = runRegistry.create(body.task);
+  let llm: LlmProvider;
+  try {
+    llm = createLlmProvider(env, llmTimeoutMs);
+  } catch {
+    // Misconfigured openai env ("requires LLM_BASE_URL and LLM_MODEL") —
+    // honest terminal state on the record, not a 500 (research decision).
+    runRegistry.finalize(run.id, "llm_error", [], null);
+    return json({ ok: true, data: run }, 200);
+  }
+  // G6 semantics: MOCK_FAIL_AFTER caps the loop's maxIterations for MOCK runs
+  // only, so a capped mock run ends max_iterations while the mock is still
+  // replaying its broken-first iterations.
+  if (llm.id === MOCK_PROVIDER_ID) {
+    maxIterations = Math.min(maxIterations, parseOptionalPositiveInt(env.MOCK_FAIL_AFTER, Number.MAX_SAFE_INTEGER));
+  }
+  const result = await runAgent({
+    task: body.task,
+    spec: body.spec,
+    maxIterations,
+    runDeadlineMs,
+    llm,
+    typechecker: getTypechecker(),
+    sandbox: getSandboxRuntime(env),
+    transpile: transpileGuest,
+  });
+  // finalize mutates the stored record IN PLACE — `run` IS the stored record.
+  runRegistry.finalize(run.id, result.status, result.iterations, result.timings);
+  return json({ ok: true, data: run }, 200);
 }
 
 interface SandboxExecuteBody {
@@ -122,9 +260,7 @@ interface SandboxExecuteBody {
 }
 
 // SAND-01..04 debug surface (prototype affordance): executes posted JS in the
-// QuickJS-WASM sandbox and returns the structured ExecuteResult. Phase 4's
-// agent loop calls getSandboxRuntime(env).execute() directly; this route
-// exists so every guardrail is curl-verifiable under wrangler dev. 200 even
+// QuickJS-WASM sandbox and returns the structured ExecuteResult. 200 even
 // when data.status is error/timeout/crash — the execution itself succeeded.
 async function handleSandboxExecute(request: Request, env: Env): Promise<Response> {
   const body = (await parseJsonBody(request)) as SandboxExecuteBody | null;
@@ -135,8 +271,10 @@ async function handleSandboxExecute(request: Request, env: Env): Promise<Respons
   return json({ ok: true, data: result }, 200);
 }
 
-// Lazy-init seam: Phases 2-3 fill typechecker/sandbox identities; /healthz stays fast.
-export function getRuntimeInfo() {
+// Lazy-init seam: Phases 2-4 fill typechecker/sandbox/agent identities;
+// /healthz stays fast. `agent` is appended LAST so the Phase 1 payload key
+// order stays stable (CONTEXT).
+export function getRuntimeInfo(env: Env) {
   return {
     // Best-effort workerd version: workerd has no in-band version API, so
     // navigator.userAgent is the only in-band signal (tests assert non-empty).
@@ -147,6 +285,7 @@ export function getRuntimeInfo() {
     instanceId: instanceIdOnce(),
     uptime_s: Math.floor((Date.now() - bootMsOnce()) / 1000),
     userAgent: navigator.userAgent, // raw signal behind the `workerd` best-effort above
+    agent: getAgentIdentity(env), // LLM_PROVIDER-selected identity, appended last
   };
 }
 
@@ -169,9 +308,9 @@ export default {
     try {
       switch (`${method} ${pathname}`) {
         case "GET /healthz":
-          return respond(json({ ok: true, data: { status: "ok", runtime: getRuntimeInfo() } }, 200));
+          return respond(json({ ok: true, data: { status: "ok", runtime: getRuntimeInfo(env) } }, 200));
         case "POST /agent/run":
-          return respond(fail(501, "not_implemented", `${label} is registered but not implemented yet`));
+          return respond(await handleAgentRun(request, env));
         case "POST /typecheck":
           return respond(await handleTypecheck(request));
         case "POST /sandbox/execute":
