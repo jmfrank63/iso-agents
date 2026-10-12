@@ -1,5 +1,7 @@
 import { runRegistry } from "./runs";
 import { getTypechecker, getTypecheckerIdentity } from "./typecheck";
+import { getSandboxRuntime } from "./sandbox/runtime";
+import { getSandboxIdentity } from "./sandbox/identity";
 
 export interface Env {
   LLM_PROVIDER?: string;
@@ -8,6 +10,8 @@ export interface Env {
   LLM_MODEL?: string;
   AGENT_MAX_ITERATIONS?: string;
   SANDBOX_TIMEOUT_MS?: string;
+  SANDBOX_MEMORY_LIMIT_MB?: string;
+  SANDBOX_STACK_KB?: string;
 }
 
 const COMPATIBILITY_DATE = "2026-09-01";
@@ -113,6 +117,24 @@ async function handleTypecheck(request: Request): Promise<Response> {
   return json({ ok: true, data: result }, 200);
 }
 
+interface SandboxExecuteBody {
+  code?: unknown;
+}
+
+// SAND-01..04 debug surface (prototype affordance): executes posted JS in the
+// QuickJS-WASM sandbox and returns the structured ExecuteResult. Phase 4's
+// agent loop calls getSandboxRuntime(env).execute() directly; this route
+// exists so every guardrail is curl-verifiable under wrangler dev. 200 even
+// when data.status is error/timeout/crash — the execution itself succeeded.
+async function handleSandboxExecute(request: Request, env: Env): Promise<Response> {
+  const body = (await parseJsonBody(request)) as SandboxExecuteBody | null;
+  if (body === null || typeof body !== "object" || typeof body.code !== "string") {
+    throw new HttpError(400, "bad_request", "body must be JSON {code: string}");
+  }
+  const result = await getSandboxRuntime(env).execute(body.code);
+  return json({ ok: true, data: result }, 200);
+}
+
 // Lazy-init seam: Phases 2-3 fill typechecker/sandbox identities; /healthz stays fast.
 export function getRuntimeInfo() {
   return {
@@ -121,7 +143,7 @@ export function getRuntimeInfo() {
     workerd: navigator.userAgent,
     compatibility_date: COMPATIBILITY_DATE,
     typechecker: getTypecheckerIdentity(), // flips after first checker use (lazy singleton)
-    sandbox: "unloaded", // Phase 3: quickjs variant id
+    sandbox: getSandboxIdentity(), // flips after first sandbox execution (lazy module load)
     instanceId: instanceIdOnce(),
     uptime_s: Math.floor((Date.now() - bootMsOnce()) / 1000),
     userAgent: navigator.userAgent, // raw signal behind the `workerd` best-effort above
@@ -132,10 +154,11 @@ const KNOWN_PATHS: Record<string, string> = {
   "/healthz": "GET",
   "/agent/run": "POST",
   "/typecheck": "POST",
+  "/sandbox/execute": "POST",
 };
 
 export default {
-  async fetch(request: Request, _env: Env, _ctx: ExecutionContext): Promise<Response> {
+  async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
     const started = performance.now();
     const { method, pathname } = { method: request.method, pathname: new URL(request.url).pathname };
     const label = `${method} ${pathname}`;
@@ -151,6 +174,8 @@ export default {
           return respond(fail(501, "not_implemented", `${label} is registered but not implemented yet`));
         case "POST /typecheck":
           return respond(await handleTypecheck(request));
+        case "POST /sandbox/execute":
+          return respond(await handleSandboxExecute(request, env));
         default: {
           if (method === "GET" && pathname.startsWith("/agent/run/")) {
             const id = pathname.slice("/agent/run/".length);
