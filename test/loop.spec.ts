@@ -1,0 +1,194 @@
+import { describe, expect, it } from "vitest";
+import { runAgent, type AgentLoopDeps } from "../src/agent/loop";
+import { LlmError, type LlmCompletion, type LlmMessage, type LlmProvider } from "../src/agent/provider";
+import type { ExecuteResult, SandboxRuntime } from "../src/sandbox/runtime";
+import type { TranspileResult } from "../src/typecheck/transpile";
+import type { Typechecker, TypecheckResult } from "../src/typecheck/index";
+
+// Loop logic with stub seams ONLY (small-module discipline — no typescript /
+// quickjs in this graph: the typecheck/sandbox imports above are type-only
+// and erased). Real gates are proven live by scripts/test-agent-live.mjs.
+
+const GREEN = 'function answer(): number {\n  return 42;\n}\ntest("answer", () => { expect(answer()).toEqual(42); });\n';
+const BROKEN = 'function answer(): string {\n  return 42;\n}\ntest("answer", () => { expect(answer()).toEqual("42"); });\n';
+
+const contract = (code: string): string =>
+  JSON.stringify({ explanation: "stub draft", files: { "guest.ts": code } });
+
+class StubProvider implements LlmProvider {
+  readonly id = "stub";
+  calls = 0;
+  constructor(private readonly texts: string[]) {}
+  complete(_messages: LlmMessage[]): Promise<LlmCompletion> {
+    const text = this.texts[Math.min(this.calls, this.texts.length - 1)];
+    this.calls += 1;
+    return Promise.resolve({ text });
+  }
+}
+
+class FailingProvider implements LlmProvider {
+  readonly id = "stub-failing";
+  calls = 0;
+  complete(_messages: LlmMessage[]): Promise<LlmCompletion> {
+    this.calls += 1;
+    return Promise.reject(new LlmError("llm down", false));
+  }
+}
+
+class StubTypechecker implements Typechecker {
+  readonly id = "stub";
+  private i = 0;
+  constructor(private readonly results: TypecheckResult[]) {}
+  async check(_files: Map<string, string>): Promise<TypecheckResult> {
+    const result = this.results[Math.min(this.i, this.results.length - 1)];
+    this.i += 1;
+    return result;
+  }
+}
+
+class StubSandbox implements SandboxRuntime {
+  calls: string[] = [];
+  private i = 0;
+  constructor(private readonly results: ExecuteResult[]) {}
+  async execute(code: string): Promise<ExecuteResult> {
+    this.calls.push(code);
+    const result = this.results[Math.min(this.i, this.results.length - 1)];
+    this.i += 1;
+    return result;
+  }
+}
+
+const transpile = (source: string): TranspileResult => ({ js: source, diagnostics: [], ms: 1 });
+
+const OK_CHECK: TypecheckResult = { ok: true, diagnostics: [], ms: 2 };
+// Stub data is PROGRAMMED, not computed — line/column below are arbitrary
+// values chosen to make the feedback-format assert exact.
+const BAD_CHECK: TypecheckResult = {
+  ok: false,
+  diagnostics: [
+    {
+      code: 2322,
+      message: "Type 'number' is not assignable to type 'string'.",
+      line: 1,
+      column: 28,
+      file: "/guest.ts",
+      category: "Error",
+    },
+  ],
+  ms: 2,
+};
+const PASS: ExecuteResult = { status: "ok", logs: [], tests: [{ name: "answer", passed: true }], ms: 3 };
+const FAIL: ExecuteResult = {
+  status: "ok",
+  logs: [{ level: "log", args: ["hmm"] }],
+  tests: [{ name: "answer", passed: false, error: 'expected "42", got "42"' }],
+  ms: 3,
+};
+
+function deps(overrides: Partial<AgentLoopDeps>): AgentLoopDeps {
+  return {
+    task: "task",
+    spec: "spec",
+    maxIterations: 5,
+    runDeadlineMs: 25000,
+    llm: new StubProvider([contract(GREEN)]),
+    typechecker: new StubTypechecker([OK_CHECK]),
+    sandbox: new StubSandbox([PASS]),
+    transpile,
+    ...overrides,
+  };
+}
+
+describe("runAgent", () => {
+  it("success path: one iteration, sandbox ran, full timings shape (OBS-01)", async () => {
+    const sandbox = new StubSandbox([PASS]);
+    const result = await runAgent(deps({ sandbox }));
+    expect(result.status).toBe("success");
+    expect(result.iterations.length).toBe(1);
+    expect(result.iterations[0].sandbox).not.toBeNull();
+    expect(result.iterations[0].feedback).toBeNull();
+    expect(sandbox.calls.length).toBe(1);
+    expect(Object.keys(result.timings).sort()).toEqual([
+      "llmMs",
+      "sandboxMs",
+      "totalMs",
+      "transpileMs",
+      "typecheckMs",
+    ]);
+    // workerd's performance.now() ticks in whole ms, so the all-stub instant
+    // path can legitimately total 0 — OBS-01 wants the duration recorded,
+    // not positive (plan-review coarse-clock finding).
+    expect(result.timings.totalMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("CORE-03: failing typecheck skips the sandbox and feeds diagnostics back", async () => {
+    const sandbox = new StubSandbox([PASS]);
+    const result = await runAgent(
+      deps({
+        llm: new StubProvider([contract(BROKEN), contract(GREEN)]),
+        typechecker: new StubTypechecker([BAD_CHECK, OK_CHECK]),
+        sandbox,
+      }),
+    );
+    expect(result.status).toBe("success");
+    expect(result.iterations.length).toBe(2);
+    expect(result.iterations[0].sandbox).toBeNull();
+    expect(result.iterations[0].typecheck?.ok).toBe(false);
+    expect(result.iterations[0].feedback).toContain("/guest.ts:1:28 TS2322");
+    expect(result.iterations[0].feedback).toContain("fix and return the FULL file(s) again");
+    expect(sandbox.calls.length).toBe(1);
+  });
+
+  it("max_iterations: every iteration fails the gate and the loop stops at the cap", async () => {
+    const sandbox = new StubSandbox([]);
+    const result = await runAgent(
+      deps({
+        llm: new StubProvider([contract(BROKEN)]),
+        typechecker: new StubTypechecker([BAD_CHECK]),
+        sandbox,
+        maxIterations: 3,
+      }),
+    );
+    expect(result.status).toBe("max_iterations");
+    expect(result.iterations.length).toBe(3);
+    expect(sandbox.calls.length).toBe(0);
+  });
+
+  it("llm_error: a provider failure terminates the run with zero iterations", async () => {
+    const llm = new FailingProvider();
+    const result = await runAgent(deps({ llm }));
+    expect(result.status).toBe("llm_error");
+    expect(result.iterations.length).toBe(0);
+    expect(llm.calls).toBe(1);
+  });
+
+  it("run_deadline: an expired deadline exits before the first LLM call", async () => {
+    const llm = new StubProvider([contract(GREEN)]);
+    const result = await runAgent(deps({ llm, runDeadlineMs: 0 }));
+    expect(result.status).toBe("run_deadline");
+    expect(result.iterations.length).toBe(0);
+    expect(llm.calls).toBe(0);
+  });
+
+  it("llm_malformed: one corrective retry, then the run terminates malformed", async () => {
+    const llm = new StubProvider(["this is not json", "still not json"]);
+    const result = await runAgent(deps({ llm }));
+    expect(result.status).toBe("llm_malformed");
+    expect(llm.calls).toBe(2);
+    expect(result.iterations.length).toBe(1);
+    expect(result.iterations[0].typecheck).toBeNull();
+  });
+
+  it("a test-less guest gets explicit feedback and the loop continues", async () => {
+    const noTests: ExecuteResult = { status: "ok", logs: [], tests: [], ms: 1 };
+    const result = await runAgent(
+      deps({
+        llm: new StubProvider([contract(GREEN), contract(GREEN)]),
+        sandbox: new StubSandbox([noTests, PASS]),
+      }),
+    );
+    expect(result.status).toBe("success");
+    expect(result.iterations.length).toBe(2);
+    expect(result.iterations[0].feedback).toContain("no test() calls found");
+  });
+});
