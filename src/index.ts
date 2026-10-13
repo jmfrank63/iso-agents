@@ -11,6 +11,7 @@ import {
 } from "./agent/provider";
 import { MOCK_PROVIDER_ID } from "./agent/mock";
 import { runAgent } from "./agent/loop";
+import { runShellSession, ShellBadRequestError, type ShellSessionResult } from "./shell/shell";
 
 export interface Env {
   LLM_PROVIDER?: string;
@@ -271,6 +272,44 @@ async function handleSandboxExecute(request: Request, env: Env): Promise<Respons
   return json({ ok: true, data: result }, 200);
 }
 
+interface ShellBody {
+  commands?: unknown;
+  files?: unknown;
+  stopOnError?: unknown;
+}
+
+// SHELL-01/02: stateless tool-protocol session (CONTEXT — no shell process,
+// no shared state; per-request VFS seeded only by `files`). Request-shape
+// violations — including the ShellBadRequestError the pure session module
+// throws — are 400 bad_request; per-op failures are 200 ok:false entries.
+// Deps are the SAME per-request primitives /agent/run uses
+// (getTypechecker() singleton, getSandboxRuntime(env), transpileGuest), so
+// the sandbox/typecheck guardrails are inherited by construction and the
+// agent loop stays untouched (CONTEXT decision).
+async function handleShell(request: Request, env: Env): Promise<Response> {
+  const body = (await parseJsonBody(request)) as ShellBody | null;
+  if (body === null || typeof body !== "object") {
+    throw new HttpError(
+      400,
+      "bad_request",
+      "body must be JSON {commands: [{op, args?}...], files?, stopOnError?}",
+    );
+  }
+  let session: ShellSessionResult;
+  try {
+    session = await runShellSession(
+      { commands: body.commands, files: body.files, stopOnError: body.stopOnError },
+      { typechecker: getTypechecker(), sandbox: getSandboxRuntime(env), transpile: transpileGuest },
+    );
+  } catch (err) {
+    if (err instanceof ShellBadRequestError) {
+      throw new HttpError(400, "bad_request", err.message);
+    }
+    throw err;
+  }
+  return json({ ok: true, data: session }, 200);
+}
+
 // Lazy-init seam: Phases 2-4 fill typechecker/sandbox/agent identities;
 // /healthz stays fast. `agent` is appended LAST so the Phase 1 payload key
 // order stays stable (CONTEXT).
@@ -292,6 +331,7 @@ export function getRuntimeInfo(env: Env) {
 const KNOWN_PATHS: Record<string, string> = {
   "/healthz": "GET",
   "/agent/run": "POST",
+  "/agent/shell": "POST",
   "/typecheck": "POST",
   "/sandbox/execute": "POST",
 };
@@ -313,6 +353,8 @@ export default {
           return respond(await handleAgentRun(request, env));
         case "POST /typecheck":
           return respond(await handleTypecheck(request));
+        case "POST /agent/shell":
+          return respond(await handleShell(request, env));
         case "POST /sandbox/execute":
           return respond(await handleSandboxExecute(request, env));
         default: {
