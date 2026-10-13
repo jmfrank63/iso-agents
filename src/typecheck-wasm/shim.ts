@@ -1,14 +1,30 @@
-// workerd-safe host shim for the vendored ts_rust.wasm (WASM-01): a
-// TypeScript port of pingdotgg/ts-rust@569df52 npm/wasm/core.js's import
-// surface, proven inside wrangler dev by the 06-RESEARCH spike. The
-// Node-specific parts of core.js (worker_threads 256 MB stacks, real fs) are
-// deliberately NOT ported: the run is synchronous on the calling thread and
-// every check gets a FRESH WebAssembly.Instance — the module's own
-// one-run-per-instance design (2-8 ms instantiate vs a ~0.6-1.2 s check —
-// 06-RESEARCH). Documented-not-solved (06-CONTEXT): with no JSPI in workerd,
-// deep checker recursion can trap the instance; the trap surfaces as a
-// thrown host error, the same class as QuickJS aborts. Guests here are
-// small.
+// workerd-safe host shim for the vendored ts_rust.wasm (WASM-01 + FORK-02):
+// a TypeScript port of pingdotgg/ts-rust npm/wasm/core.js's import surface,
+// proven inside wrangler dev by the 06-RESEARCH spike. The Node-specific
+// parts of core.js (worker_threads 256 MB stacks, real fs) are deliberately
+// NOT ported: the run is synchronous on the calling thread. TWO run paths:
+//   runTsc     — fresh-instance legacy (Phase 6 semantics; the bench's
+//                "wasm (fresh)" comparison leg + escape hatch): one
+//                WebAssembly.Instance per call, one ts_run per instance.
+//   runTscHeld — the Phase 7 held-instance runtime (FORK-02): ONE lazy
+//                singleton Instance per isolate serves many ts_run calls
+//                via the multi-run fork's version flow (branch multi-run @
+//                c1b8218339d0 — 07-RESEARCH). Recycled after
+//                RECYCLE_AFTER_RUNS (50, env-overridable) and on ANY throw:
+//                a WasiExit there is the panic-hook exit (normal exits —
+//                0 clean, 2 = diagnostics found, NOT an error — come back
+//                as ts_run's RETURN value) and non-WasiExit throws are the
+//                trap/RangeError class — post-panic Rust
+//                state is undefined, so the instance drops no matter what
+//                and the next check instantiates fresh (2-8 ms from the
+//                same compiled module). The held fs is keyed to the held
+//                instance's lifetime and stamps a fresh monotonic mtimeNs
+//                on every writeFile/remove — that stamp is the fork's
+//                parse-cache key; constant mtimes serve STALE parses
+//                (07-RESEARCH negative control).
+// Documented-not-solved (06-CONTEXT): with no JSPI in workerd, deep checker
+// recursion can trap the instance; the trap surfaces as a thrown host
+// error — and now ALSO recycles the held instance. Guests here are small.
 //
 // Import surface (06-RESEARCH, identical in Node and workerd):
 //   ts_host.fs(op, ptr, len) -> staged result byte length; -1 not
@@ -26,9 +42,15 @@ import wasmModule from "./ts_rust.wasm";
 import { createMemoryFileSystem, type MemoryFileSystem } from "./memfs";
 import type { WasmDiagnostic } from "./mapping";
 
-// The upstream commit the committed artifact was built from
-// (docs/ts-rust-wasm.md holds the full pin + sha256).
-export const TS_RUST_PIN = "569df52";
+// Fork provenance (FORK-01): the committed artifact is built from the
+// multi-run fork — branch `multi-run` @ c1b8218339d0 on top of upstream
+// pin 569df52 (docs/ts-rust-wasm.md holds the full hashes + sha256). The
+// checker identity is fork-qualified: the fork changes observable behavior
+// (one instance, many runs), so pretending to still be the pin would be
+// dishonest.
+export const TS_RUST_BASE_PIN = "569df52";
+export const TS_RUST_FORK_BRANCH = "multi-run";
+export const TS_RUST_FORK_COMMIT = "c1b8218339d0";
 
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
@@ -291,6 +313,9 @@ function prepareRun(module: WebAssembly.Module, options: PrepareRunOptions) {
     start(instance: WebAssembly.Instance): () => number {
       exports = instance.exports as TsRustExports;
       memory = exports.memory;
+      // Held runs call start() once per ts_run — reset the cross-run
+      // stderr accumulator so a later crash attaches only ITS OWN text.
+      stderrText = "";
       let flags = 0;
       if (diagnosticsJson) flags |= FLAG_DIAGNOSTICS_JSON;
       if (caseInsensitive) flags |= FLAG_CASE_INSENSITIVE;
@@ -346,9 +371,10 @@ export interface RunTscOptions {
 }
 
 // Vendored-artifact integrity assert (the TYPE-01 assert precedent): runs
-// once, on the first runTsc call, and fails loudly if the committed
-// ts_rust.wasm does not match pin 569df52's import/export surface (e.g. a
-// stale or corrupt copy replaced the artifact).
+// once, on the first runTsc/runTscHeld call, and fails loudly if the
+// committed ts_rust.wasm does not match fork multi-run/c1b8218339d0's
+// import/export surface (ABI frozen vs the pin — 07-RESEARCH; e.g. a stale
+// or corrupt copy replaced the artifact).
 let shapeChecked = false;
 function assertModuleShape(): void {
   if (shapeChecked) return;
@@ -358,30 +384,32 @@ function assertModuleShape(): void {
     if (!importNames.includes(required)) {
       throw new Error(
         `FATAL: ts_rust.wasm is missing the "${required}" import — the vendored artifact does not ` +
-          `match ts-rust pin ${TS_RUST_PIN}; see docs/ts-rust-wasm.md`,
+          `match ts-rust ${TS_RUST_FORK_BRANCH}/${TS_RUST_FORK_COMMIT}; see docs/ts-rust-wasm.md`,
       );
     }
   }
   if (!importNames.some((name) => name.startsWith("wasi_snapshot_preview1."))) {
     throw new Error(
-      `FATAL: ts_rust.wasm has no wasi_snapshot_preview1 imports — the vendored artifact does not ` +
-        `match ts-rust pin ${TS_RUST_PIN}; see docs/ts-rust-wasm.md`,
+        `FATAL: ts_rust.wasm has no wasi_snapshot_preview1 imports — the vendored artifact does not ` +
+          `match ts-rust ${TS_RUST_FORK_BRANCH}/${TS_RUST_FORK_COMMIT}; see docs/ts-rust-wasm.md`,
     );
   }
   for (const required of ["memory", "ts_input", "ts_run", "ts_output", "ts_output_len"]) {
     if (!exportNames.includes(required)) {
       throw new Error(
         `FATAL: ts_rust.wasm is missing the "${required}" export — the vendored artifact does not ` +
-          `match ts-rust pin ${TS_RUST_PIN}; see docs/ts-rust-wasm.md`,
+          `match ts-rust ${TS_RUST_FORK_BRANCH}/${TS_RUST_FORK_COMMIT}; see docs/ts-rust-wasm.md`,
       );
     }
   }
   shapeChecked = true;
 }
 
-// core.js runTsc, plus timings around instantiate and run. A FRESH
-// WebAssembly.Instance per call (CONTEXT decision); the Module itself is
-// compiled once at bundle load (CompiledWasm import).
+// core.js runTsc, plus timings around instantiate and run. The FRESH-
+// instance path (Phase 6 semantics, kept for the bench's "wasm (fresh)"
+// leg and as the non-held fallback — no in-repo caller after FORK-02);
+// the Module itself is compiled once at bundle load (CompiledWasm import).
+// The checker uses runTscHeld.
 export function runTsc(options: RunTscOptions): WasmRunResult {
   assertModuleShape();
   const stdoutChunks: string[] = [];
@@ -414,5 +442,167 @@ export function runTsc(options: RunTscOptions): WasmRunResult {
     stdout: stdoutChunks.join("").slice(0, 65536),
     stderr: stderrChunks.join("").slice(0, 65536),
     timings: { instantiateMs: t1 - t0, runMs: t2 - t1 },
+  };
+}
+
+// ---- held-instance runtime (FORK-02, 07-CONTEXT decision) ----
+//
+// ONE WebAssembly.Instance per isolate: the multi-run fork serves many
+// ts_run calls per instance through its program-version flow, dropping the
+// per-check cost from ~0.5-1.2 s cold to ~70-125 ms warm (07-RESEARCH).
+// The compiled Module is the same bundle-load import both paths share;
+// recycling = dropping the instance and instantiating a fresh one from it
+// (2-8 ms; probe-measured 162 ms end-to-end incl. the fresh cold check).
+
+// Default recycle threshold (07-CONTEXT: recycle after 50 runs). The
+// factory overrides it per isolate from TSCHECKER_WASM_RECYCLE_AFTER
+// (parsed in src/typecheck/selection.ts) — the live harness boots with 2
+// to walk the recycle boundary over HTTP.
+export const RECYCLE_AFTER_RUNS = 50;
+
+// Module-level held state: the prepared run (imports bound to the held fs)
+// + the instance + the fs itself, all keyed to the instance's lifetime —
+// the fs's monotonic mtime stamps only guarantee freshness within one
+// instance's lifetime, which is exactly the parse cache's lifetime.
+let heldPrepared: ReturnType<typeof prepareRun> | undefined;
+let heldInstance: WebAssembly.Instance | undefined;
+let heldFs: MemoryFileSystem | undefined;
+let heldGen = 0; // instances created so far (recycles = max(gen - 1, 0))
+let heldRunsOnInstance = 0;
+let heldRunsTotal = 0;
+let heldEnvKey = ""; // env is installed once per instance (WASI environ)
+
+// Per-run stdout/stderr sinks for the held instance's imports (bound once
+// at instantiation; cleared at the top of every runTscHeld call).
+const heldStdoutChunks: string[] = [];
+const heldStderrChunks: string[] = [];
+
+export interface HeldRunStats {
+  instanceGen: number; // 0 until the first held run instantiates
+  runsOnInstance: number;
+  runsTotal: number;
+  recycles: number;
+  memoryBytes: number | null; // held linear memory; null while down
+}
+
+function dropHeldInstance(): void {
+  heldPrepared = undefined;
+  heldInstance = undefined;
+  heldFs = undefined;
+}
+
+export function heldRunStats(): HeldRunStats {
+  return {
+    instanceGen: heldGen,
+    runsOnInstance: heldRunsOnInstance,
+    runsTotal: heldRunsTotal,
+    recycles: Math.max(heldGen - 1, 0),
+    memoryBytes:
+      heldInstance !== undefined
+        ? (heldInstance.exports as TsRustExports).memory.buffer.byteLength
+        : null,
+  };
+}
+
+// Sync the check's files into the held fs BEFORE ts_run: write changed/new
+// files (each write stamps a fresh monotonic mtimeNs — the fork's parse-
+// cache key) and REMOVE files the check no longer has (a stale guest would
+// otherwise join include: ["*.ts"] and pollute the diagnostics).
+function syncHeldFiles(fs: MemoryFileSystem, files: Map<string, string>): void {
+  for (const [path, content] of files) {
+    if (fs.readFile(path) !== content) {
+      const err = fs.writeFile(path, ENCODER.encode(content), false);
+      if (err !== undefined) {
+        throw new Error(`runTscHeld: seeding ${path} failed: ${err}`);
+      }
+    }
+  }
+  for (const path of [...fs.files.keys()]) {
+    if (!files.has(path)) fs.remove(path);
+  }
+}
+
+export interface HeldRunResult extends WasmRunResult {
+  instanceGen: number;
+  runsOnInstance: number;
+}
+
+// One ts_run on the held singleton. recycleAfter bounds the instance's run
+// count (07-CONTEXT: 50); ANY throw drops the instance regardless (see the
+// header rationale — post-panic Rust state is undefined). cwd is pinned to
+// "/": install_os_override runs once per instance, so the first run's cwd
+// is every run's cwd (07-RESEARCH) — iso-agents always checks with
+// cwd "/" + -p /app, asserted here. Env is pinned the same way (WASI
+// environ is instance state, installed at instantiation).
+export function runTscHeld(
+  options: RunTscOptions,
+  recycleAfter: number = RECYCLE_AFTER_RUNS,
+): HeldRunResult {
+  assertModuleShape();
+  if ((options.cwd ?? "/") !== "/") {
+    throw new TypeError(`runTscHeld requires cwd "/"; got ${JSON.stringify(options.cwd)}`);
+  }
+  const envKey = JSON.stringify(options.env ?? {});
+  if (heldInstance !== undefined && heldEnvKey !== envKey) {
+    dropHeldInstance(); // env changed: WASI environ is instance state
+  }
+  if (heldInstance !== undefined && heldRunsOnInstance >= recycleAfter) {
+    dropHeldInstance(); // scheduled recycle: fresh instance, same Module
+  }
+  let instantiateMs = 0;
+  if (heldInstance === undefined) {
+    const tInst = performance.now();
+    heldGen += 1;
+    heldRunsOnInstance = 0;
+    heldEnvKey = envKey;
+    heldFs = createMemoryFileSystem();
+    heldPrepared = prepareRun(wasmModule, {
+      args: options.args,
+      cwd: "/",
+      fs: heldFs,
+      env: options.env,
+      stdout: (chunk) => heldStdoutChunks.push(STREAM_DECODER.decode(chunk, { stream: true })),
+      stderr: (chunk) => heldStderrChunks.push(STDERR_DECODER.decode(chunk, { stream: true })),
+      diagnosticsJson: options.diagnosticsJson,
+    });
+    heldInstance = new WebAssembly.Instance(wasmModule, heldPrepared.imports);
+    instantiateMs = performance.now() - tInst;
+  }
+  const servedGen = heldGen;
+  const fs = heldFs!;
+  const prepared = heldPrepared!;
+  const instance = heldInstance;
+  syncHeldFiles(fs, options.files);
+  heldStdoutChunks.length = 0;
+  heldStderrChunks.length = 0;
+  const tRun = performance.now();
+  const tsRun = prepared.start(instance); // also resets the stderr accumulator
+  let exitCode = SUCCESS;
+  let error: unknown;
+  heldRunsOnInstance += 1;
+  heldRunsTotal += 1;
+  try {
+    exitCode = tsRun();
+  } catch (thrown) {
+    error = thrown;
+    // RECYCLE ON ANY THROW (07-RESEARCH): a WasiExit here is the panic-hook
+    // exit (normal exits arrive as ts_run's RETURN value — 0 clean, 2 =
+    // diagnostics found, NOT an error — probe-proven: red guests stayed
+    // warm with memory flat runs 2-50), and a non-WasiExit throw is the
+    // trap/RangeError class. Post-panic Rust state is undefined (a panic
+    // between install_program_version and end_run leaves the version
+    // bookkeeping mid-flight), so drop the instance BEFORE reporting; the
+    // local `prepared` still parses result() against the dying instance.
+    dropHeldInstance();
+  }
+  const { exitCode: code, diagnostics } = prepared.result(exitCode, error);
+  return {
+    exitCode: code,
+    diagnostics,
+    stdout: heldStdoutChunks.join("").slice(0, 65536),
+    stderr: heldStderrChunks.join("").slice(0, 65536),
+    timings: { instantiateMs, runMs: performance.now() - tRun },
+    instanceGen: servedGen,
+    runsOnInstance: heldRunsOnInstance,
   };
 }
