@@ -67,6 +67,14 @@ Deferred to future release. Tracked but not in current roadmap.
 - [x] **SHELL-02**: shell run/typecheck ops inherit sandbox guardrails + checker gate semantics; zero host eval; caps (32 commands, 1MB VFS)
 - [x] **SHELL-03**: unit specs (14) + live harness leg (54 ok-lines) covering happy/error/timeout/halt/validation sessions
 
+## Milestone v3 Requirements (defined 2026-10-13)
+
+- [ ] **WASM-01**: The tsc-rs WASM module is vendored as a committed artifact (`src/typecheck-wasm/ts_rust.wasm`, built from upstream pingdotgg/ts-rust at pin 569df52) with build provenance and rebuild-from-source instructions in `docs/ts-rust-wasm.md` — unpublished on npm, so deliberately no repo build step (`npm install` needs no rustup)
+- [ ] **WASM-02**: `TscRsWasmTypechecker` runs the vendored wasm checker inside the isolate (fresh `WebAssembly.Instance` per check) with ts-js-identical fixture parity: clean guest → 0 diagnostics, TS2322 guests → exact 1-based code/line/column/file (`/guest.ts` 1:7 / 2:9), config diagnostics → `(program)` -1/-1, sorted by file/line/column, ok iff no Error category
+- [ ] **WASM-03**: `TSCHECKER=ts-js|tsc-rs-wasm` selects the implementation through the `Typechecker` factory at every check call site (default `ts-js`, unknown values throw honestly); `/healthz` identity reads `unloaded` before the first check and the selected checker's id (`ts-rust@569df52 (wasm)` in wasm mode) after
+- [ ] **WASM-04**: `npm run bench:tsc-rs` gains a third "wasm (in-isolate)" leg (a second `--var TSCHECKER:tsc-rs-wasm` boot, same 1-cold+5-warm protocol) with numbers from a real run committed to docs/benchmarks.md + README, and the README premise is corrected to "unpublished; built from source at pin 569df52" pointing at `docs/ts-rust-wasm.md`
+- [ ] **WASM-05**: Coverage in BOTH TSCHECKER modes: small-module unit specs never drag the wasm/typescript graphs into the vitest transport; the wasm-mode live harness is the 5th `test:live` leg; the full gate chain (check / vitest / no-host-eval / bundle:check shipping both .wasm artifacts / bench 3 legs / 5 live harnesses) is green in both modes
+
 ## Out of Scope
 
 Explicitly excluded. Documented to prevent scope creep.
@@ -77,7 +85,7 @@ Explicitly excluded. Documented to prevent scope creep.
 | Production deployment to Cloudflare | Local `wrangler dev` demonstrates the scenario; deploy adds account requirements |
 | Auth / multi-tenancy | Prototype |
 | Agent tools beyond code-fix loop (search, shell, packages) | The loop is code → check → run → fix only |
-| tsc-rs inside the worker runtime | Native binaries only today (no WASM); documented seam instead |
+| tsc-rs inside the worker runtime | Corrected 2026-10-13 — no longer out of scope: the wasm build is unpublished; built from source at pin 569df52 — shipped in-isolate (Phase 6, WASM-01..05) |
 | Guest async / multi-file bundling in sandbox | Sync single-file guests keep the sandbox small and provably safe |
 
 ## Traceability
@@ -107,6 +115,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LLM-03 | Phase 4 — Agent loop + LLM + observability | Done |
 | OBS-01 | Phase 4 — Agent loop + LLM + observability | Done |
 | OBS-02 | Phase 4 — Agent loop + LLM + observability | Done |
+| WASM-01 | Phase 6 — tsc-rs WASM in-isolate | Planned |
+| WASM-02 | Phase 6 — tsc-rs WASM in-isolate | Planned |
+| WASM-03 | Phase 6 — tsc-rs WASM in-isolate | Planned |
+| WASM-04 | Phase 6 — tsc-rs WASM in-isolate | Planned |
+| WASM-05 | Phase 6 — tsc-rs WASM in-isolate | Planned |
 
 **Coverage:**
 - v1 requirements: 21
