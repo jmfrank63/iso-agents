@@ -18,6 +18,11 @@ export interface Env {
   // "tsc-rs-wasm" (the factory lives in src/typecheck/index.ts). Surfaced by
   // the /healthz identity.
   TSCHECKER?: string;
+  // FORK-02: TSCHECKER_WASM_RECYCLE_AFTER overrides the held wasm
+  // instance's recycle threshold (default 50 = RECYCLE_AFTER_RUNS in
+  // src/typecheck-wasm/shim.ts). Parsed by src/typecheck/selection.ts; the
+  // live harness boots with 2, the bench's fresh leg with 1.
+  TSCHECKER_WASM_RECYCLE_AFTER?: string;
   LLM_PROVIDER?: string;
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
@@ -162,6 +167,11 @@ async function handleTypecheck(request: Request, env: Env): Promise<Response> {
     const r = await checker.check(files);
     results.push({ run: i, ms: r.ms, ok: r.ok });
   }
+  // FORK-03 observability: the wasm checker's held-instance stats ride the
+  // response — same instanceGen across runs = reuse; a bump = recycle — so
+  // harnesses prove instance reuse + recycling over plain HTTP. Other
+  // checkers omit the field entirely.
+  const held = checker.heldStats?.();
   // Stats on a sorted COPY; `results` stays in run order (run r == results[r-1]).
   const sorted = results.map((r) => r.ms).sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -177,6 +187,7 @@ async function handleTypecheck(request: Request, env: Env): Promise<Response> {
         medianMs,
         meanMs,
         coldMs: results[0].ms,
+        ...(held === undefined ? {} : { held }),
       },
     },
     200,
