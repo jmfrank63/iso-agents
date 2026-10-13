@@ -7,7 +7,7 @@
 
 ## Current Focus
 
-**Milestone v4: Phase 7 — ts-rust fork: multi-run wasm instances (user decision: fork and implement, not file-and-wait)**
+**Milestone v4: complete** — four milestones shipped
 
 ## Position
 
