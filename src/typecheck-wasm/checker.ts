@@ -13,7 +13,12 @@ import { runTsc, TS_RUST_PIN } from "./shim";
 // The spike-proven project config seeded into every check (06-RESEARCH
 // probe requests): strict + es2022, wildcard include relative to /app.
 // CLI args add --noEmit; everything else is the module's embedded default.
-const TSCONFIG_TEXT = '{"compilerOptions":{"strict":true,"target":"es2022"},"include":["*.ts"]}';
+// `lib: ["es2022"]` mirrors the ts-js guest surface (core closure, no DOM):
+// the module's default lib chain includes DOM (`var console: Console`),
+// which TS2403-clashes with the seeded guest-globals.d.ts console (proven
+// live, 06-02 T2).
+const TSCONFIG_TEXT =
+  '{"compilerOptions":{"strict":true,"target":"es2022","lib":["es2022"]},"include":["*.ts"]}';
 
 export class TscRsWasmTypechecker implements Typechecker {
   readonly id = `ts-rust@${TS_RUST_PIN} (wasm)`;
