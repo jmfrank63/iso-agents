@@ -6,7 +6,7 @@
     "dev": "wrangler dev",
     "postinstall": "node scripts/copy-quickjs-wasm.mjs",
     "test": "vitest run",
-    "test:live": "node scripts/test-typecheck-live.mjs && node scripts/test-sandbox-live.mjs && node scripts/test-agent-live.mjs",
+    "test:live": "node scripts/test-typecheck-live.mjs && node scripts/test-sandbox-live.mjs && node scripts/test-agent-live.mjs && node scripts/test-shell-live.mjs",
     "test:watch": "vitest",
     "bench:tsc-rs": "node scripts/bench-tsc-rs.mjs",
     "check": "tsc --noEmit",
