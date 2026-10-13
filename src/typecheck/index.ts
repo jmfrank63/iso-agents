@@ -1,6 +1,8 @@
 import ts from "typescript";
 import { GUEST_COMPILER_OPTIONS, makeHost } from "./host";
 import { GUEST_GLOBALS } from "./vfs";
+import { parseTSChecker } from "./selection";
+import { TscRsWasmTypechecker } from "../typecheck-wasm/checker";
 
 export interface TypecheckDiagnostic {
   code: number;
@@ -19,11 +21,14 @@ export interface TypecheckResult {
   ms: number;
 }
 
-// tsc-rs drop-in seam. tsc-rs ships native binaries only today (no WASM
-// build), so it cannot run inside workerd; this interface is the documented
-// boundary a future WASM tsc-rs build implements. The agent loop (Phase 4)
-// and the /typecheck benchmark depend on `Typechecker`, never on tsc
-// directly — swapping implementations changes nothing above this line.
+// tsc-rs drop-in seam. THREE implementations prove it is genuine:
+// TsTypechecker (pure-JS typescript@6.0.3, the default), TranspileOnly
+// (the Phase 2 seam proof), and TscRsWasmTypechecker (the real Rust
+// checker, vendored as src/typecheck-wasm/ts_rust.wasm at upstream pin
+// 569df52 — unpublished on npm; see docs/ts-rust-wasm.md). The agent loop
+// (Phase 4), /agent/shell and the /typecheck benchmark depend on
+// `Typechecker`, never on a concrete checker — swapping implementations
+// changes nothing above this line.
 export interface Typechecker {
   readonly id: string;
   check(files: Map<string, string>): Promise<TypecheckResult>;
@@ -31,7 +36,7 @@ export interface Typechecker {
 
 // Boot-time identity assert (TYPE-01): an accidental upgrade to npm "latest"
 // (native tsgo 7.x) must fail loudly here, not silently break in-isolate
-// checking. Runs once, on the first getTypechecker() call.
+// checking. Runs once, on the first ts-js checker build.
 function assertCompilerIdentity(): void {
   if (ts.version !== "6.0.3") {
     throw new Error(
@@ -111,20 +116,26 @@ export function createTypechecker(kind: TypecheckerKind = "ts"): Typechecker {
   return kind === "ts" ? new TsTypechecker() : new TranspileOnlyTypechecker();
 }
 
-// Lazy module-level singleton (CONTEXT decision): boot assert + construction
-// on first call; lib parse happens inside the first real check.
-// getTypecheckerIdentity() never triggers init, so /healthz stays fast and
-// flips only after the checker is genuinely used.
-let singleton: Typechecker | undefined;
+// Lazy module-level singletons (CONTEXT decision), one per implementation:
+// construction on first call — for ts-js that includes the boot assert, and
+// lib parse happens inside the first real check. getTypecheckerIdentity(env)
+// never triggers init, so /healthz stays fast and flips only after the
+// SELECTED checker is genuinely used.
+let tsSingleton: Typechecker | undefined;
+let wasmSingleton: Typechecker | undefined;
 
-export function getTypechecker(): Typechecker {
-  if (singleton === undefined) {
-    assertCompilerIdentity();
-    singleton = new TsTypechecker();
+export function getTypechecker(env?: { TSCHECKER?: string }): Typechecker {
+  if (parseTSChecker(env) === "tsc-rs-wasm") {
+    return (wasmSingleton ??= new TscRsWasmTypechecker());
   }
-  return singleton;
+  if (tsSingleton === undefined) {
+    assertCompilerIdentity();
+    tsSingleton = new TsTypechecker();
+  }
+  return tsSingleton;
 }
 
-export function getTypecheckerIdentity(): string {
-  return singleton !== undefined ? `typescript@${ts.version} (in-isolate)` : "unloaded";
+export function getTypecheckerIdentity(env?: { TSCHECKER?: string }): string {
+  const loaded = parseTSChecker(env) === "tsc-rs-wasm" ? wasmSingleton : tsSingleton;
+  return loaded !== undefined ? loaded.id : "unloaded";
 }
