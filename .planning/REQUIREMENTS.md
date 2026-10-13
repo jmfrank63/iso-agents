@@ -75,6 +75,12 @@ Deferred to future release. Tracked but not in current roadmap.
 - [ ] **WASM-04**: `npm run bench:tsc-rs` gains a third "wasm (in-isolate)" leg (a second `--var TSCHECKER:tsc-rs-wasm` boot, same 1-cold+5-warm protocol) with numbers from a real run committed to docs/benchmarks.md + README, and the README premise is corrected to "unpublished; built from source at pin 569df52" pointing at `docs/ts-rust-wasm.md`
 - [ ] **WASM-05**: Coverage in BOTH TSCHECKER modes: small-module unit specs never drag the wasm/typescript graphs into the vitest transport; the wasm-mode live harness is the 5th `test:live` leg; the full gate chain (check / vitest / no-host-eval / bundle:check shipping both .wasm artifacts / bench 3 legs / 5 live harnesses) is green in both modes
 
+## Milestone v4 Requirements (defined 2026-10-13)
+
+- [x] **FORK-01**: Fork provenance committed: `src/typecheck-wasm/ts_rust.wasm` is the multi-run fork build (branch `multi-run` @ `c1b8218339d0` of pingdotgg/ts-rust @ pin `569df52`; 5,150,781 bytes; sha256 recorded), `docs/ts-rust-wasm.md` documents branch/commit/diff summary (+327/-11, 5 files, ABI frozen) + the rebuild path (clone, checkout multi-run, `scripts/wasm/build.sh`), and the checker identity is fork-qualified (`ts-rust@multi-run/c1b8218 (wasm)`)
+- [x] **FORK-02**: Held-instance checker: a lazy singleton `WebAssembly.Instance` per isolate serves many `ts_run` calls through the fork's version flow — recycled after 50 runs (`TSCHECKER_WASM_RECYCLE_AFTER` override) and on ANY throw (a WasiExit there is the panic-hook exit; normal exits 0/2 — 2 = diagnostics found, NOT an error — arrive as ts_run's return value); host-side mtime stamping (per-write monotonic `mtimeNs` in memfs, held fs keyed to the instance) so changed files re-parse; same diagnostic parity fixtures (TS2322 @1:7 / 2:9 / clean / lib-heavy)
+- [x] **FORK-03**: Bench + gates: `npm run bench:tsc-rs` reports "wasm (fresh)" (a `TSCHECKER_WASM_RECYCLE_AFTER:1` boot = fresh instance per run) and "wasm (held)" (default boot = one instance per isolate) side by side with REAL run numbers committed to docs/benchmarks.md + README; the live harness proves reuse (same instanceGen across requests, warm < first run) and the recycle path (scheduled boundary at threshold 2 + recycle-on-error → next check correct); full chain green in both TSCHECKER modes
+
 ## Out of Scope
 
 Explicitly excluded. Documented to prevent scope creep.
@@ -120,6 +126,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | WASM-03 | Phase 6 — tsc-rs WASM in-isolate | Done |
 | WASM-04 | Phase 6 — tsc-rs WASM in-isolate | Done |
 | WASM-05 | Phase 6 — tsc-rs WASM in-isolate | Done |
+| FORK-01 | Phase 7 — tsc-rs fork: multi-run held instances | Done |
+| FORK-02 | Phase 7 — tsc-rs fork: multi-run held instances | Done |
+| FORK-03 | Phase 7 — tsc-rs fork: multi-run held instances | Done |
 
 **Coverage:**
 - v1 requirements: 21
