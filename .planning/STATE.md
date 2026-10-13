@@ -7,7 +7,7 @@
 
 ## Current Focus
 
-**Milestone v2: complete** — both milestones shipped
+**Milestone v3: Phase 6 — tsc-rs WASM in-isolate (user-sourced premise correction: crates/ts_wasm exists in-source, unpublished to npm)**
 
 ## Position
 
@@ -45,6 +45,9 @@ Binding on planning (source: [research/SUMMARY.md](research/SUMMARY.md)):
 - workerd freezes `Date.now()` in global scope (reads ~0) — lazy-memoize boot/instance values on first request (fixed in 01-01, commit 861c634)
 - `no_nodejs_compat` + `no_nodejs_compat_v2` both set; healthz `workerd`/`userAgent` = `navigator.userAgent` (no in-band version API)
 - typescript pinned exactly 6.0.3 in package.json
+
+## Recent Decisions (milestone v3)
+- PREMISE CORRECTION: 'tsc-rs has no WASM' was registry-true but source-false — crates/ts_wasm (wasm32-wasip1, 4.2MB, in-memory files mode) exists upstream, UNPUBLISHED; Phase 6 = build-from-source spike + TscRsWasmTypechecker behind TSCHECKER env
 
 ## Next Actions
 
