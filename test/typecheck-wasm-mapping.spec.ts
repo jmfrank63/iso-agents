@@ -142,3 +142,46 @@ describe("wasm memory filesystem", () => {
     expect(fs.readDirectory("/app")).toBeUndefined();
   });
 });
+
+describe("wasm memfs monotonic mtime stamps (FORK-02)", () => {
+  // The fork's MultiRunHost parse cache keys on (path, mtime): a changed
+  // file MUST stat a changed mtime or the stale parse is served (07-
+  // RESEARCH negative control — exit 0/[] for a guest already parsed
+  // clean). These specs pin the host side of that contract.
+  it("stamps each write with a strictly increasing mtimeNs", () => {
+    const fs = createMemoryFileSystem();
+    const bytes = (s: string) => new TextEncoder().encode(s);
+    fs.writeFile("/app/guest.ts", bytes("a"), false);
+    const first = fs.stat("/app/guest.ts")!.mtimeNs!;
+    fs.writeFile("/app/other.ts", bytes("b"), false);
+    fs.writeFile("/app/guest.ts", bytes("a2"), false);
+    const rewritten = fs.stat("/app/guest.ts")!.mtimeNs!;
+    expect(first).toBe(1n);
+    expect(rewritten).toBe(3n);
+    expect(rewritten > first).toBe(true);
+  });
+
+  it("leaves constructor-seeded files unstamped (mtimeMs 0, no mtimeNs)", () => {
+    const fs = createMemoryFileSystem(new Map([["/app/seed.ts", "export {};\n"]]));
+    const stat = fs.stat("/app/seed.ts")!;
+    expect(stat.mtimeMs).toBe(0);
+    expect(stat.mtimeNs).toBeUndefined();
+    expect(stat).toEqual({ isDirectory: false, size: 11, mtimeMs: 0 });
+  });
+
+  it("clears the stamp on remove and issues a fresh one on rewrite", () => {
+    const fs = createMemoryFileSystem();
+    const bytes = (s: string) => new TextEncoder().encode(s);
+    fs.writeFile("/app/guest.ts", bytes("v1"), false);
+    fs.remove("/app/guest.ts");
+    expect(fs.stat("/app/guest.ts")).toBeUndefined();
+    fs.writeFile("/app/guest.ts", bytes("v2"), false);
+    expect(fs.stat("/app/guest.ts")!.mtimeNs).toBe(2n);
+  });
+
+  it("stamps are stable across reads (stat is pure)", () => {
+    const fs = createMemoryFileSystem();
+    fs.writeFile("/app/guest.ts", new TextEncoder().encode("x"), false);
+    expect(fs.stat("/app/guest.ts")!.mtimeNs).toBe(fs.stat("/app/guest.ts")!.mtimeNs);
+  });
+});

@@ -2,8 +2,11 @@
 // TypeScript port of pingdotgg/ts-rust@569df52 npm/wasm/core.js's
 // memoryFileSystem. PURE module — zero imports — so vitest specs exercise it
 // directly instead of dragging the 5.1 MB wasm module into the worker
-// transport (Phase 2 lesson). The checker seeds a fresh map per check; any
-// writes from the module land in that map and die with the instance.
+// transport (Phase 2 lesson). Two lifetimes: a fresh fs per runTsc call
+// (dies with the instance), and the HELD fs (FORK-02) that lives as long as
+// the held instance — where every writeFile/remove stamps a fresh monotonic
+// mtimeNs, the fork's parse-cache key (constant mtimes serve STALE parses —
+// 07-RESEARCH negative control).
 export interface MemFsStat {
   isDirectory: boolean;
   isFile?: boolean;
@@ -37,6 +40,12 @@ const FILE_DECODER = new TextDecoder("utf-8", { ignoreBOM: true, fatal: false })
 
 export function createMemoryFileSystem(files: Map<string, string> = new Map()): MemoryFileSystem {
   const map = files instanceof Map ? files : new Map(Object.entries(files) as [string, string][]);
+  // Monotonic per-write stamp source + per-path stamps. BigInt steps, never
+  // reset for the fs's lifetime. Constructor-seeded files carry NO stamp —
+  // they stat mtimeMs: 0 exactly as before (the fresh path never re-parses
+  // within one instance, so it has nothing to go stale).
+  let tick = 0n;
+  const stamps = new Map<string, bigint>();
   const dirPrefix = (path: string): string => (path.endsWith("/") ? path : `${path}/`);
   const isDir = (path: string): boolean => {
     if (path === "/") return true;
@@ -52,7 +61,13 @@ export function createMemoryFileSystem(files: Map<string, string> = new Map()): 
     stat(path) {
       const text = map.get(path);
       if (text !== undefined) {
-        return { isDirectory: false, size: ENCODER.encode(text).length, mtimeMs: 0 };
+        const stamp = stamps.get(path);
+        return {
+          isDirectory: false,
+          size: ENCODER.encode(text).length,
+          mtimeMs: 0,
+          ...(stamp !== undefined ? { mtimeNs: stamp } : {}),
+        };
       }
       return isDir(path) ? { isDirectory: true, size: 0, mtimeMs: 0 } : undefined;
     },
@@ -79,12 +94,16 @@ export function createMemoryFileSystem(files: Map<string, string> = new Map()): 
       }
       const text = FILE_DECODER.decode(data);
       map.set(path, append ? (map.get(path) ?? "") + text : text);
+      stamps.set(path, ++tick);
       return undefined;
     },
     remove(path) {
       const prefix = dirPrefix(path);
       for (const key of [...map.keys()]) {
-        if (key === path || key.startsWith(prefix)) map.delete(key);
+        if (key === path || key.startsWith(prefix)) {
+          map.delete(key);
+          stamps.delete(key);
+        }
       }
       return undefined;
     },
