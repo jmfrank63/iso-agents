@@ -300,15 +300,18 @@ try {
   await killWrangler(wrangler, port);
 }
 
-// ---- leg 3/3: tsc-rs wasm IN-ISOLATE (second boot, TSCHECKER=tsc-rs-wasm) ----
-console.log("leg 3/3: tsc-rs wasm checker (POST /typecheck under a --var TSCHECKER:tsc-rs-wasm boot)...");
+// ---- leg 3/4: tsc-rs wasm IN-ISOLATE, FRESH instance per run — the boot
+// pins TSCHECKER_WASM_RECYCLE_AFTER:1, so every run drops and re-instantiates
+// the held instance: Phase 6's fresh-instance semantics through the same
+// endpoint (asserted below per snippet: runsOnInstance === 1 + cumulative gen/recycles). ----
+console.log("leg 3/4: tsc-rs wasm checker, FRESH instance per run (POST /typecheck under --var TSCHECKER:tsc-rs-wasm --var TSCHECKER_WASM_RECYCLE_AFTER:1)...");
 const wasm = [];
 let portWasm;
 let wranglerWasm;
 let wasmLog = "";
 try {
   portWasm = await freePort();
-  wranglerWasm = spawnWrangler(portWasm, { TSCHECKER: "tsc-rs-wasm" });
+  wranglerWasm = spawnWrangler(portWasm, { TSCHECKER: "tsc-rs-wasm", TSCHECKER_WASM_RECYCLE_AFTER: "1" });
   wranglerWasm.stdout.on("data", (d) => {
     wasmLog += d;
   });
@@ -333,6 +336,17 @@ try {
       `wasm leg: ${snippet.name} -> every run ok === ${expectedOk}`,
       data?.results?.map((r) => r.ok),
     );
+    // All 5 snippets share ONE TSCHECKER_WASM_RECYCLE_AFTER:1 boot, so the
+    // held stats ACCUMULATE across snippets: snippet k ends at gen 6k with
+    // recycles 6k-1 (gen 6/12/18/24/30, final recycles 29). runsOnInstance
+    // === 1 is the per-run fresh-semantics proof: every run dropped and
+    // re-instantiated, so each request's last run sits on a fresh instance.
+    const expectedGen = (SNIPPETS.indexOf(snippet) + 1) * 6;
+    assert(
+      data?.held?.instanceGen === expectedGen && data.held.runsOnInstance === 1 && data.held.recycles === expectedGen - 1,
+      `wasm fresh leg: ${snippet.name} -> recycled every run (cumulative gen ${expectedGen}, recycles ${expectedGen - 1})`,
+      data?.held,
+    );
     wasm.push({
       name: snippet.name,
       coldMs: data.coldMs,
@@ -343,16 +357,67 @@ try {
   await killWrangler(wranglerWasm, portWasm);
 }
 
+// ---- leg 4/4: tsc-rs wasm IN-ISOLATE, HELD instance (the default boot —
+// ONE instance per isolate, recycle after 50; runs 2+ ride the fork's
+// mtime-keyed parse cache of unchanged files). Same 1 cold + 5 warm
+// protocol; all 5 snippets share the one instance (30 runs < 50). ----
+console.log("leg 4/4: tsc-rs wasm checker, HELD instance (POST /typecheck under --var TSCHECKER:tsc-rs-wasm)...");
+const wasmHeld = [];
+let portHeld;
+let wranglerHeld;
+let heldLog = "";
+try {
+  portHeld = await freePort();
+  wranglerHeld = spawnWrangler(portHeld, { TSCHECKER: "tsc-rs-wasm" });
+  wranglerHeld.stdout.on("data", (d) => {
+    heldLog += d;
+  });
+  wranglerHeld.stderr.on("data", (d) => {
+    heldLog += d;
+  });
+  await waitHealthy(portHeld, () => heldLog);
+
+  for (const snippet of SNIPPETS) {
+    const res = await post(portHeld, "/typecheck", JSON.stringify({ files: { "guest.ts": snippet.source }, runs: 6 }));
+    assert(res.status === 200, `wasm held leg: ${snippet.name} -> HTTP 200`, res.status);
+    const data = res.json?.data;
+    assert(
+      data?.runs === 6 && Array.isArray(data?.results) && data.results.length === 6,
+      `wasm held leg: ${snippet.name} -> 6 runs (1 cold + 5 warm)`,
+      data?.runs,
+    );
+    const expectedOk = snippet.expectedErrors === 0;
+    assert(
+      Array.isArray(data?.results) && data.results.every((r) => r.ok === expectedOk),
+      `wasm held leg: ${snippet.name} -> every run ok === ${expectedOk}`,
+      data?.results?.map((r) => r.ok),
+    );
+    assert(
+      data?.held?.instanceGen === 1 && data.held.recycles === 0,
+      `wasm held leg: ${snippet.name} -> all runs on the ONE held instance (gen 1, recycles 0)`,
+      data?.held,
+    );
+    wasmHeld.push({
+      name: snippet.name,
+      coldMs: data.coldMs,
+      warmMs: data.results.slice(1).map((r) => r.ms),
+    });
+  }
+} finally {
+  await killWrangler(wranglerHeld, portHeld);
+}
+
 // ---- table + docs/benchmarks.md ----
 const header = [
-  "| snippet          | tsc-rs cold ms | tsc-rs warm med(10) | tsc-rs warm min | ts-js cold ms | ts-js warm med(5) | wasm cold ms | wasm warm med(5) | errors (exp/got) |",
-  "|------------------|----------------|---------------------|-----------------|---------------|-------------------|--------------|------------------|------------------|",
+  "| snippet          | tsc-rs cold ms | tsc-rs warm med(10) | tsc-rs warm min | ts-js cold ms | ts-js warm med(5) | wasm fresh cold ms | wasm fresh warm med(5) | wasm held cold ms | wasm held warm med(5) | errors (exp/got) |",
+  "|------------------|----------------|---------------------|-----------------|---------------|-------------------|--------------------|------------------------|-------------------|-----------------------|------------------|",
 ];
 const rows = SNIPPETS.map((snippet, i) => {
   const a = tscRs[i];
   const b = iso[i];
-  const c = wasm[i];
-  return `| ${snippet.name.padEnd(16)} | ${f1(a.coldMs)} | ${f1(median(a.warmMs))} | ${f1(Math.min(...a.warmMs))} | ${f1(b.coldMs)} | ${f1(median(b.warmMs))} | ${f1(c.coldMs)} | ${f1(median(c.warmMs))} | ${snippet.expectedErrors}/${a.errors} |`;
+  const c = wasm[i]; // fresh-instance leg (TSCHECKER_WASM_RECYCLE_AFTER:1 boot)
+  const h = wasmHeld[i]; // held-instance leg (default boot)
+  return `| ${snippet.name.padEnd(16)} | ${f1(a.coldMs)} | ${f1(median(a.warmMs))} | ${f1(Math.min(...a.warmMs))} | ${f1(b.coldMs)} | ${f1(median(b.warmMs))} | ${f1(c.coldMs)} | ${f1(median(c.warmMs))} | ${f1(h.coldMs)} | ${f1(median(h.warmMs))} | ${snippet.expectedErrors}/${a.errors} |`;
 });
 const table = [...header, ...rows].join("\n");
 
@@ -363,23 +428,23 @@ try {
   // cosmetic only — never fail the bench over the version string
 }
 const spawnLine = `tsc-rs native spawn+init: ${f1(median(tscRs.map((r) => r.spawnMs)))} ms median across the ${tscRs.length} API instances (not part of the cold column).`;
-const machineLine = `Machine: ${process.platform} ${process.arch}, ${process.version}, tsc-rs ${tscRsVersion} (native), workerd via wrangler dev, typescript 6.0.3 in-isolate (ts-js), ts-rust wasm pin 569df52 in-isolate (TSCHECKER=tsc-rs-wasm).`;
+const machineLine = `Machine: ${process.platform} ${process.arch}, ${process.version}, tsc-rs ${tscRsVersion} (native), workerd via wrangler dev, typescript 6.0.3 in-isolate (ts-js), ts-rust wasm multi-run/c1b8218339d0 (fork of pin 569df52) in-isolate (TSCHECKER=tsc-rs-wasm; fresh = TSCHECKER_WASM_RECYCLE_AFTER:1 boot, held = default boot).`;
 const footnotes = [
   "tsc-rs warm med(10) = median of 10 subsequent createProgram+diagnostics checks on the SAME API instance (persistent native subprocess, sync-RPC); cold = the first such check after spawn.",
   "In-isolate cold = POST /typecheck data.coldMs (run 1 of 6); warm med(5) = median of runs 2-6 (runs: 6 so there are 5 warm samples; the endpoint default of 5 yields only 4).",
   "Lib-closure difference, footnoted rather than forced to parity: tsc-rs checks against its default lib.es2022.full chain INCLUDING DOM; the in-isolate checker uses the bundled 115-file es2022 core closure (no DOM). All five snippets type-check identically on both.",
   "Both legs share the guest surface: /guest-globals.d.ts (repo GUEST_GLOBALS_TEXT) is an explicit rootName on the tsc-rs leg and prepended implicitly by the in-isolate checker; options mirror GUEST_COMPILER_OPTIONS (strict, ES2022, noEmit, ESNext modules, Bundler resolution, skipLibCheck, isolatedModules, forceConsistentCasingInFileNames).",
-  "tsc-rs is host-side only on the native leg (binary subprocess). Its WASM build is the third leg: the vendored ts_rust.wasm (unpublished; built from source at pin 569df52 — docs/ts-rust-wasm.md) runs INSIDE the isolate behind the same Typechecker interface.",
-  "wasm cold ms / wasm warm med(5) = POST /typecheck against a SECOND wrangler dev boot with TSCHECKER=tsc-rs-wasm (runs: 6 — same 1 cold + 5 warm protocol as the ts-js leg). Every run builds a fresh WebAssembly.Instance (2-8 ms); the lib.d.ts closure is embedded in the module (strict + es2022 tsconfig under /app, mirroring the ts-js guest surface).",
-  "The wasm module ships unconditionally in the worker bundle (+5,125,434 bytes raw); local dev does not enforce CPU limits — a wasm check costs ~0.6-1.2 s of synchronous CPU per run.",
+  "tsc-rs is host-side only on the native leg (binary subprocess). Its WASM build is the third and fourth legs: the vendored ts_rust.wasm (unpublished; built from the multi-run FORK — branch multi-run @ c1b8218339d0 of pin 569df52 — docs/ts-rust-wasm.md) runs INSIDE the isolate behind the same Typechecker interface.",
+  "wasm fresh cold/warm = POST /typecheck against a wrangler dev boot with TSCHECKER_WASM_RECYCLE_AFTER:1 — every run drops and re-instantiates the WebAssembly.Instance (2-8 ms), i.e. Phase 6's fresh-instance semantics (asserted per snippet: runsOnInstance 1 with a cumulative gen 6/12/18/24/30 — one recycle per run). wasm held cold/warm = the default boot: ONE held instance per isolate serves ALL snippets (asserted: instanceGen 1, recycles 0 across all 30 runs); run 1 is cold, runs 2-6 ride the fork's mtime-keyed parse cache of unchanged files. Both boots use the same 1 cold + 5 warm protocol; the lib.d.ts closure is embedded in the module (strict + es2022 tsconfig under /app, mirroring the ts-js guest surface).",
+  "The wasm module ships unconditionally in the worker bundle (+5,150,781 bytes raw); local dev does not enforce CPU limits — a fresh wasm check costs ~0.5-1.2 s of synchronous CPU, a warm held check ~70-125 ms (07-RESEARCH).",
 ];
 
 const doc = [
-  "# Benchmark: native tsc-rs vs the in-isolate checkers (ts-js + tsc-rs-wasm)",
+  "# Benchmark: native tsc-rs vs the in-isolate checkers (ts-js + tsc-rs-wasm fresh/held)",
   "",
-  "Reproduce with `npm run bench:tsc-rs` — it boots TWO `wrangler dev` workers (default ts-js +",
-  "TSCHECKER=tsc-rs-wasm), prints this table, and rewrites this file. README.md commits the same",
-  "numbers.",
+  "Reproduce with `npm run bench:tsc-rs` — it boots THREE `wrangler dev` workers (default ts-js +",
+  "TSCHECKER=tsc-rs-wasm fresh via TSCHECKER_WASM_RECYCLE_AFTER:1 + TSCHECKER=tsc-rs-wasm held),",
+  "prints this table, and rewrites this file. README.md commits the same numbers.",
   "",
   `Generated: ${new Date().toISOString()}`,
   "",
