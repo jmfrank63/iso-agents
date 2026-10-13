@@ -7,14 +7,15 @@
 
 ## Current Focus
 
-**Phase 4: Agent loop + LLM + observability** — not started
+**Phase 5: tsc-rs integration + agent shell runtime** — not started (milestone v2)
 
 ## Position
 
 - Phase 1 — Worker scaffold + health endpoint: **complete (DELIVERED — live-verified, 8/8 in-workerd tests)**
 - Phase 2 — In-isolate type-check core: **complete (DELIVERED — 42/42 live harness; TS2322@1:7 in 191ms cold, 52ms warm in-isolate)**
 - Phase 3 — QuickJS-WASM sandbox executor: **complete (DELIVERED — 82/82 live harness; while(true)→structured timeout 532ms; no crash-poisoning; zero host eval)**
-- Phase 4 — Agent loop + LLM + observability: not started
+- Phase 4 — Agent loop + LLM + observability: **complete (DELIVERED — mock loop success in 3 iters, 330ms total; 135/135 live; milestone v1 tagged v0.1.0)**
+- Phase 5 — tsc-rs integration + agent shell runtime (milestone v2): not started
 
 ## Recent Decisions
 

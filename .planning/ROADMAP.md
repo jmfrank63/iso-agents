@@ -83,3 +83,29 @@ v1 is done when the core value is demonstrable end-to-end with curl, no API keys
 6. All 21 v1 requirements validated and moved to PROJECT.md "Validated"; tsc-rs seam and its native-only/no-WASM constraint documented at the `Typechecker` interface.
 
 **The demonstration:** one curl to `POST /agent/run` returns, in seconds, a transcript in which a deliberately broken mock first draft fails type-check, receives structured diagnostics, fixes itself, and passes all spec assertions in the sandbox — with `typecheckMs` measured per iteration, and `POST /typecheck` stats proving the check is cheap enough to run N times per request. That is the entire thesis.
+
+---
+
+# Milestone v2 — the video's stack on workerd (defined 2026-10-13)
+
+**Goal:** close the gap to the tsc-rs video's story: use the real Rust compiler (host-side,
+measured against the in-isolate checker) and make the isolate directly agent-drivable via a
+shell-style tool protocol.
+
+## Phases
+
+### Phase 5: tsc-rs integration + agent shell runtime
+Goal: bench the native tsc-rs binary against the in-isolate checker on identical guests and
+expose POST /agent/shell (ls/cat/write/rm/run/typecheck) so external agent harnesses (T3-style)
+drive the isolate over HTTP, one stateless call per tool.
+Requirements: TSCRS-01, TSCRS-02, SHELL-01, SHELL-02, SHELL-03
+Success criteria:
+1. `npm run bench:tsc-rs` runs the native tsc-rs binary on >=5 guest snippets and prints a
+   table (tsc-rs ms vs in-isolate ms per snippet); results committed to README.
+2. README "Why" section documents the video mapping: tsc-rs native today (host/agent side),
+   Typechecker interface = drop-in seam when WASM lands.
+3. POST /agent/shell executes a scripted session: write file -> typecheck (diagnostics on
+   error) -> run (sandbox) -> cat/ls/rm roundtrip, all over HTTP in one call.
+4. Shell ops are guardrailed: run/typecheck inherit sandbox deadline + typecheck gate
+   semantics; no host eval; per-request VFS.
+5. Full gate chain green (check / 27+ vitest / no-host-eval / bundle floor / 4 live harnesses).
