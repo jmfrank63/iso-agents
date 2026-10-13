@@ -14,6 +14,10 @@ import { runAgent } from "./agent/loop";
 import { runShellSession, ShellBadRequestError, type ShellSessionResult } from "./shell/shell";
 
 export interface Env {
+  // WASM-03: TSCHECKER selects the Typechecker — "ts-js" (default) or
+  // "tsc-rs-wasm" (the factory lives in src/typecheck/index.ts). Surfaced by
+  // the /healthz identity.
+  TSCHECKER?: string;
   LLM_PROVIDER?: string;
   LLM_BASE_URL?: string;
   LLM_API_KEY?: string;
@@ -115,7 +119,7 @@ interface TypecheckBody {
 // run, the rest are warm. `results[].ok` is a research-G2 ADDITION to the
 // CONTEXT stats shape so harnesses keep a red/green assert; per-diagnostic
 // exactness re-homed to scripts/test-agent-live.mjs (agent transcript).
-async function handleTypecheck(request: Request): Promise<Response> {
+async function handleTypecheck(request: Request, env: Env): Promise<Response> {
   const body = (await parseJsonBody(request)) as TypecheckBody | null;
   if (
     body === null ||
@@ -152,7 +156,7 @@ async function handleTypecheck(request: Request): Promise<Response> {
       content as string,
     ]),
   );
-  const checker = getTypechecker();
+  const checker = getTypechecker(env);
   const results: Array<{ run: number; ms: number; ok: boolean }> = [];
   for (let i = 1; i <= runs; i++) {
     const r = await checker.check(files);
@@ -247,7 +251,7 @@ async function handleAgentRun(request: Request, env: Env): Promise<Response> {
     maxIterations,
     runDeadlineMs,
     llm,
-    typechecker: getTypechecker(),
+    typechecker: getTypechecker(env),
     sandbox: getSandboxRuntime(env),
     transpile: transpileGuest,
   });
@@ -283,7 +287,7 @@ interface ShellBody {
 // violations — including the ShellBadRequestError the pure session module
 // throws — are 400 bad_request; per-op failures are 200 ok:false entries.
 // Deps are the SAME per-request primitives /agent/run uses
-// (getTypechecker() singleton, getSandboxRuntime(env), transpileGuest), so
+// (getTypechecker(env) singleton, getSandboxRuntime(env), transpileGuest), so
 // the sandbox/typecheck guardrails are inherited by construction and the
 // agent loop stays untouched (CONTEXT decision).
 async function handleShell(request: Request, env: Env): Promise<Response> {
@@ -299,7 +303,7 @@ async function handleShell(request: Request, env: Env): Promise<Response> {
   try {
     session = await runShellSession(
       { commands: body.commands, files: body.files, stopOnError: body.stopOnError },
-      { typechecker: getTypechecker(), sandbox: getSandboxRuntime(env), transpile: transpileGuest },
+      { typechecker: getTypechecker(env), sandbox: getSandboxRuntime(env), transpile: transpileGuest },
     );
   } catch (err) {
     if (err instanceof ShellBadRequestError) {
@@ -319,7 +323,7 @@ export function getRuntimeInfo(env: Env) {
     // navigator.userAgent is the only in-band signal (tests assert non-empty).
     workerd: navigator.userAgent,
     compatibility_date: COMPATIBILITY_DATE,
-    typechecker: getTypecheckerIdentity(), // flips after first checker use (lazy singleton)
+    typechecker: getTypecheckerIdentity(env), // flips after the SELECTED checker's first use (lazy singleton)
     sandbox: getSandboxIdentity(), // flips after first sandbox execution (lazy module load)
     instanceId: instanceIdOnce(),
     uptime_s: Math.floor((Date.now() - bootMsOnce()) / 1000),
@@ -352,7 +356,7 @@ export default {
         case "POST /agent/run":
           return respond(await handleAgentRun(request, env));
         case "POST /typecheck":
-          return respond(await handleTypecheck(request));
+          return respond(await handleTypecheck(request, env));
         case "POST /agent/shell":
           return respond(await handleShell(request, env));
         case "POST /sandbox/execute":
