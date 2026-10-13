@@ -1,7 +1,7 @@
 import ts from "typescript";
 import { GUEST_COMPILER_OPTIONS, makeHost } from "./host";
 import { GUEST_GLOBALS } from "./vfs";
-import { parseTSChecker } from "./selection";
+import { parseTSChecker, parseTSCheckerWasmRecycleAfter } from "./selection";
 import { TscRsWasmTypechecker } from "../typecheck-wasm/checker";
 
 export interface TypecheckDiagnostic {
@@ -24,14 +24,28 @@ export interface TypecheckResult {
 // tsc-rs drop-in seam. THREE implementations prove it is genuine:
 // TsTypechecker (pure-JS typescript@6.0.3, the default), TranspileOnly
 // (the Phase 2 seam proof), and TscRsWasmTypechecker (the real Rust
-// checker, vendored as src/typecheck-wasm/ts_rust.wasm at upstream pin
-// 569df52 — unpublished on npm; see docs/ts-rust-wasm.md). The agent loop
+// checker, vendored as src/typecheck-wasm/ts_rust.wasm from the multi-run
+// fork — branch multi-run @ c1b8218339d0 of upstream pin 569df52 —
+// unpublished on npm; see docs/ts-rust-wasm.md). The agent loop
 // (Phase 4), /agent/shell and the /typecheck benchmark depend on
 // `Typechecker`, never on a concrete checker — swapping implementations
 // changes nothing above this line.
+// Optional per-isolate held-instance stats (FORK-02/03): implemented only
+// by TscRsWasmTypechecker; the /typecheck endpoint surfaces it so the live
+// harness can prove instance reuse + recycling over HTTP. Other checkers
+// omit it (the field is absent from their responses).
+export interface TypecheckerHeldStats {
+  instanceGen: number;
+  runsOnInstance: number;
+  runsTotal: number;
+  recycles: number;
+  memoryBytes: number | null;
+}
+
 export interface Typechecker {
   readonly id: string;
   check(files: Map<string, string>): Promise<TypecheckResult>;
+  heldStats?(): TypecheckerHeldStats;
 }
 
 // Boot-time identity assert (TYPE-01): an accidental upgrade to npm "latest"
@@ -124,9 +138,12 @@ export function createTypechecker(kind: TypecheckerKind = "ts"): Typechecker {
 let tsSingleton: Typechecker | undefined;
 let wasmSingleton: Typechecker | undefined;
 
-export function getTypechecker(env?: { TSCHECKER?: string }): Typechecker {
+export function getTypechecker(env?: {
+  TSCHECKER?: string;
+  TSCHECKER_WASM_RECYCLE_AFTER?: string;
+}): Typechecker {
   if (parseTSChecker(env) === "tsc-rs-wasm") {
-    return (wasmSingleton ??= new TscRsWasmTypechecker());
+    return (wasmSingleton ??= new TscRsWasmTypechecker(parseTSCheckerWasmRecycleAfter(env)));
   }
   if (tsSingleton === undefined) {
     assertCompilerIdentity();
