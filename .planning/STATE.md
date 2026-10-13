@@ -7,7 +7,7 @@
 
 ## Current Focus
 
-**Milestone v3: Phase 6 — tsc-rs WASM in-isolate (user-sourced premise correction: crates/ts_wasm exists in-source, unpublished to npm)**
+**Milestone v3: complete** — three milestones shipped
 
 ## Position
 
@@ -49,7 +49,7 @@ Binding on planning (source: [research/SUMMARY.md](research/SUMMARY.md)):
 ## Recent Decisions (milestone v3)
 - PREMISE CORRECTION: 'tsc-rs has no WASM' was registry-true but source-false — crates/ts_wasm (wasm32-wasip1, 4.2MB, in-memory files mode) exists upstream, UNPUBLISHED; Phase 6 = build-from-source spike + TscRsWasmTypechecker behind TSCHECKER env
 
-## Next Actions
+## Next Actions (post-v3)
 
 1. Milestone v2 complete. Candidates for v3: SSE streaming, Durable Object state, tsc-rs WASM seam when published, sidecar mode.
 

@@ -115,11 +115,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | LLM-03 | Phase 4 — Agent loop + LLM + observability | Done |
 | OBS-01 | Phase 4 — Agent loop + LLM + observability | Done |
 | OBS-02 | Phase 4 — Agent loop + LLM + observability | Done |
-| WASM-01 | Phase 6 — tsc-rs WASM in-isolate | Planned |
-| WASM-02 | Phase 6 — tsc-rs WASM in-isolate | Planned |
-| WASM-03 | Phase 6 — tsc-rs WASM in-isolate | Planned |
-| WASM-04 | Phase 6 — tsc-rs WASM in-isolate | Planned |
-| WASM-05 | Phase 6 — tsc-rs WASM in-isolate | Planned |
+| WASM-01 | Phase 6 — tsc-rs WASM in-isolate | Done |
+| WASM-02 | Phase 6 — tsc-rs WASM in-isolate | Done |
+| WASM-03 | Phase 6 — tsc-rs WASM in-isolate | Done |
+| WASM-04 | Phase 6 — tsc-rs WASM in-isolate | Done |
+| WASM-05 | Phase 6 — tsc-rs WASM in-isolate | Done |
 
 **Coverage:**
 - v1 requirements: 21
