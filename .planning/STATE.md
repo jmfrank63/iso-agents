@@ -7,7 +7,7 @@
 
 ## Current Focus
 
-**Phase 5: tsc-rs integration + agent shell runtime** — not started (milestone v2)
+**Milestone v2: complete** — both milestones shipped
 
 ## Position
 
@@ -15,7 +15,7 @@
 - Phase 2 — In-isolate type-check core: **complete (DELIVERED — 42/42 live harness; TS2322@1:7 in 191ms cold, 52ms warm in-isolate)**
 - Phase 3 — QuickJS-WASM sandbox executor: **complete (DELIVERED — 82/82 live harness; while(true)→structured timeout 532ms; no crash-poisoning; zero host eval)**
 - Phase 4 — Agent loop + LLM + observability: **complete (DELIVERED — mock loop success in 3 iters, 330ms total; 135/135 live; milestone v1 tagged v0.1.0)**
-- Phase 5 — tsc-rs integration + agent shell runtime (milestone v2): not started
+- Phase 5 — tsc-rs integration + agent shell runtime (milestone v2): **complete (DELIVERED — 189 live ok/0 FAIL; bench table committed; /agent/shell live)**
 
 ## Recent Decisions
 
@@ -48,7 +48,7 @@ Binding on planning (source: [research/SUMMARY.md](research/SUMMARY.md)):
 
 ## Next Actions
 
-1. Run `/gsd-discuss-phase 2 --auto` → `/gsd-plan-phase 2 --auto` → `/gsd-execute-phase 2 --auto`
+1. Milestone v2 complete. Candidates for v3: SSE streaming, Durable Object state, tsc-rs WASM seam when published, sidecar mode.
 
 ## Blockers
 

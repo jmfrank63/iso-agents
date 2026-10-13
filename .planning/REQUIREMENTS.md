@@ -59,6 +59,14 @@ Deferred to future release. Tracked but not in current roadmap.
 
 - **BENCH-01**: Side-by-side benchmark endpoint: in-isolate JS tsc vs host-side `tsc-rs` native binary on identical snippets
 
+## Milestone v2 Requirements (defined 2026-10-13, delivered Phase 5)
+
+- [x] **TSCRS-01**: `npm run bench:tsc-rs` runs the native tsc-rs binary (JS API) on 5 guest snippets; table printed + committed to docs/benchmarks.md and README
+- [x] **TSCRS-02**: README documents where-things-run (tsc-rs native host-side today; Typechecker interface = drop-in seam when WASM lands; in-isolate pure-JS tsc)
+- [x] **SHELL-01**: `POST /agent/shell` executes ls/cat/write/rm/typecheck/run ops over a per-request VFS in one stateless HTTP call
+- [x] **SHELL-02**: shell run/typecheck ops inherit sandbox guardrails + checker gate semantics; zero host eval; caps (32 commands, 1MB VFS)
+- [x] **SHELL-03**: unit specs (14) + live harness leg (54 ok-lines) covering happy/error/timeout/halt/validation sessions
+
 ## Out of Scope
 
 Explicitly excluded. Documented to prevent scope creep.
