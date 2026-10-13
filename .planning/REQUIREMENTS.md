@@ -78,27 +78,27 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| RUN-01 | Phase 1 — Worker scaffold + health endpoint | Pending |
-| RUN-02 | Phase 1 — Worker scaffold + health endpoint | Pending |
-| RUN-03 | Phase 1 — Worker scaffold + health endpoint | Pending |
-| CORE-01 | Phase 4 — Agent loop + LLM + observability | Pending |
-| CORE-02 | Phase 4 — Agent loop + LLM + observability | Pending |
-| CORE-03 | Phase 4 — Agent loop + LLM + observability | Pending |
-| CORE-04 | Phase 4 — Agent loop + LLM + observability | Pending |
-| CORE-05 | Phase 4 — Agent loop + LLM + observability | Pending |
-| TYPE-01 | Phase 2 — In-isolate type-check core | Pending |
-| TYPE-02 | Phase 2 — In-isolate type-check core | Pending |
-| TYPE-03 | Phase 4 — Agent loop + LLM + observability | Pending |
-| TYPE-04 | Phase 2 — In-isolate type-check core | Pending |
-| SAND-01 | Phase 3 — QuickJS-WASM sandbox executor | Pending |
-| SAND-02 | Phase 3 — QuickJS-WASM sandbox executor | Pending |
-| SAND-03 | Phase 3 — QuickJS-WASM sandbox executor | Pending |
-| SAND-04 | Phase 3 — QuickJS-WASM sandbox executor | Pending |
-| LLM-01 | Phase 4 — Agent loop + LLM + observability | Pending |
-| LLM-02 | Phase 4 — Agent loop + LLM + observability | Pending |
-| LLM-03 | Phase 4 — Agent loop + LLM + observability | Pending |
-| OBS-01 | Phase 4 — Agent loop + LLM + observability | Pending |
-| OBS-02 | Phase 4 — Agent loop + LLM + observability | Pending |
+| RUN-01 | Phase 1 — Worker scaffold + health endpoint | Done |
+| RUN-02 | Phase 1 — Worker scaffold + health endpoint | Done |
+| RUN-03 | Phase 1 — Worker scaffold + health endpoint | Done |
+| CORE-01 | Phase 4 — Agent loop + LLM + observability | Done |
+| CORE-02 | Phase 4 — Agent loop + LLM + observability | Done |
+| CORE-03 | Phase 4 — Agent loop + LLM + observability | Done |
+| CORE-04 | Phase 4 — Agent loop + LLM + observability | Done |
+| CORE-05 | Phase 4 — Agent loop + LLM + observability | Done |
+| TYPE-01 | Phase 2 — In-isolate type-check core | Done |
+| TYPE-02 | Phase 2 — In-isolate type-check core | Done |
+| TYPE-03 | Phase 4 — Agent loop + LLM + observability | Done |
+| TYPE-04 | Phase 2 — In-isolate type-check core | Done |
+| SAND-01 | Phase 3 — QuickJS-WASM sandbox executor | Done |
+| SAND-02 | Phase 3 — QuickJS-WASM sandbox executor | Done |
+| SAND-03 | Phase 3 — QuickJS-WASM sandbox executor | Done |
+| SAND-04 | Phase 3 — QuickJS-WASM sandbox executor | Done |
+| LLM-01 | Phase 4 — Agent loop + LLM + observability | Done |
+| LLM-02 | Phase 4 — Agent loop + LLM + observability | Done |
+| LLM-03 | Phase 4 — Agent loop + LLM + observability | Done |
+| OBS-01 | Phase 4 — Agent loop + LLM + observability | Done |
+| OBS-02 | Phase 4 — Agent loop + LLM + observability | Done |
 
 **Coverage:**
 - v1 requirements: 21

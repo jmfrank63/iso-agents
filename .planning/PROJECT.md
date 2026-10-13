@@ -20,7 +20,12 @@ with per-step timings.
 
 ### Validated
 
-(None yet — ship to validate)
+- ✓ Worker runs locally under real workerd via `wrangler dev`; `/healthz`, `/agent/run`, `/agent/run/:id`, `/typecheck` live — Phase 1
+- ✓ Agent loop iterates generate → in-memory VFS → in-isolate type-check → transpile → QuickJS-WASM sandbox → assertions → feedback; success in 3 iterations on the mock scenario — Phases 2-4
+- ✓ Real TypeScript diagnostics in-isolate (typescript@6.0.3, Map VFS, bundled 57-file lib closure); 241ms cold → 8ms warm — Phase 2
+- ✓ Sandbox: QuickJS-WASM (wasmfile variant), deadline interrupt (while(true) → structured timeout ~532ms), memory/stack limits, fresh single-use contexts, zero host eval — Phase 3
+- ✓ LLM provider seam: deterministic stateful mock (zero keys, fix-loop proven), OpenAI-compatible via env — Phase 4
+- ✓ Per-step timings + /typecheck N-run stats + run store roundtrip — Phase 4
 
 ### Active
 
