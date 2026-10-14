@@ -108,6 +108,13 @@ function rootFiles(files: Record<string, string>): Map<string, string> {
 export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
   const t0 = performance.now();
   const deadline = t0 + deps.runDeadlineMs;
+  // G10 + v5 H4: the deadline is ONE wall-clock budget captured at run
+  // start, enforced after EVERY awaited stage (LLM call, corrective retry,
+  // typecheck, sandbox) and before returning success — never only before
+  // the next LLM call. Otherwise a stage that overruns the budget (slow
+  // provider, cold wasm check) could still be followed by check+execute
+  // and a `success` verdict issued after the deadline.
+  const expired = (): boolean => performance.now() >= deadline;
   const iterations: AgentIteration[] = [];
   const totals = { llmMs: 0, typecheckMs: 0, transpileMs: 0, sandboxMs: 0 };
   const finish = (status: AgentStatus): AgentRunResult => ({
@@ -122,9 +129,7 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
   const feedbackHistory: LlmMessage[] = [];
 
   for (let n = 1; n <= deps.maxIterations; n++) {
-    // G10: the run deadline is OUR wall-clock check (workerd local dev does
-    // not enforce CPU limits) — checked before every LLM call.
-    if (performance.now() >= deadline) {
+    if (expired()) {
       return finish("run_deadline");
     }
     // CONTEXT windowing: system + task/spec first user message + last 3
@@ -135,14 +140,19 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
     const llmStart = performance.now();
     let text: string;
     try {
-      text = (await deps.llm.complete(messages)).text;
+      text = (await deps.llm.complete(messages, { deadlineMs: deadline })).text;
     } catch {
       iterLlmMs = performance.now() - llmStart;
       totals.llmMs += iterLlmMs;
-      return finish("llm_error");
+      // The provider failure may BE the deadline (clamped attempt timed
+      // out / budget refused) — the honest terminal status then is ours.
+      return finish(expired() ? "run_deadline" : "llm_error");
     }
     iterLlmMs = performance.now() - llmStart;
     totals.llmMs += iterLlmMs;
+    if (expired()) {
+      return finish("run_deadline");
+    }
 
     let contract: LlmContract | undefined;
     let violationFeedback: string | undefined;
@@ -155,11 +165,12 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
         // G3: script violations heal via feedback, never terminally.
         violationFeedback = `${err.message}; fix and return the FULL file(s) again`;
       } else if (err instanceof MalformedContractError && performance.now() < deadline) {
-        // G9: exactly one corrective retry per malformed iteration.
+        // G9: exactly one corrective retry per malformed iteration — its
+        // LLM call inherits the same remaining budget (H4).
         const retryStart = performance.now();
         try {
           const corrective: LlmMessage = { role: "user", content: CORRECTIVE_PROMPT };
-          text = (await deps.llm.complete([...messages, corrective])).text;
+          text = (await deps.llm.complete([...messages, corrective], { deadlineMs: deadline })).text;
           contract = extractContract(text);
         } catch (retryErr) {
           if (retryErr instanceof ScriptViolationError) {
@@ -179,6 +190,14 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
       } else {
         malformedMessage = "contract extraction failed";
       }
+    }
+
+    // H4: the corrective-retry LLM call is an awaited stage — enforce the
+    // budget before any gate runs. (A script-violation healing iteration
+    // falls through to its push+continue below, where the loop-top check
+    // records the iteration AND terminates as run_deadline.)
+    if (expired() && violationFeedback === undefined) {
+      return finish("run_deadline");
     }
 
     if (contract === undefined && violationFeedback !== undefined) {
@@ -227,6 +246,9 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
     // CORE-03 gate: a failing type-check SKIPS the sandbox entirely.
     const check = await deps.typechecker.check(rootFiles(contract.files));
     totals.typecheckMs += check.ms;
+    if (expired()) {
+      return finish("run_deadline");
+    }
     if (!check.ok) {
       const fb = `type errors — fix and return the FULL file(s) again:\n${formatDiagnostics(check.diagnostics)}`;
       iterations.push({
@@ -289,7 +311,9 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
     totals.sandboxMs += exec.ms;
     // Success predicate: the guest evaluated AND registered tests AND every
     // test passed. A test-less guest is a failed iteration (guards an LLM
-    // answer that "passes" by never asserting).
+    // answer that "passes" by never asserting). H4: even a fully green
+    // iteration NEVER returns success after the deadline — the completed
+    // iteration stays in the transcript, but the terminal status is honest.
     if (exec.status === "ok" && exec.tests.length > 0 && exec.tests.every((t) => t.passed)) {
       iterations.push({
         n,
@@ -301,6 +325,9 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
         sandbox: exec,
         feedback: null,
       });
+      if (expired()) {
+        return finish("run_deadline");
+      }
       return finish("success");
     }
 

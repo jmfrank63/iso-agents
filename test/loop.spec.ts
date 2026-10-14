@@ -35,6 +35,23 @@ class FailingProvider implements LlmProvider {
   }
 }
 
+// H4: an awaited stage that overruns the run budget — the provider resolves
+// AFTER the deadline has passed.
+class SlowProvider implements LlmProvider {
+  readonly id = "stub-slow";
+  calls = 0;
+  constructor(
+    private readonly text: string,
+    private readonly delayMs: number,
+  ) {}
+  complete(_messages: LlmMessage[], _opts?: { deadlineMs?: number }): Promise<LlmCompletion> {
+    this.calls += 1;
+    return new Promise((resolve) => {
+      setTimeout(() => resolve({ text: this.text }), this.delayMs);
+    });
+  }
+}
+
 class StubTypechecker implements Typechecker {
   readonly id = "stub";
   private i = 0;
@@ -168,6 +185,42 @@ describe("runAgent", () => {
     expect(result.status).toBe("run_deadline");
     expect(result.iterations.length).toBe(0);
     expect(llm.calls).toBe(0);
+  });
+
+  it("H4: a provider call that overruns the budget terminates run_deadline before any gate runs", async () => {
+    // 80ms provider sleep vs a 30ms run budget — the post-LLM-stage check
+    // must fire; the old loop proceeded into check+execute regardless.
+    const sandbox = new StubSandbox([PASS]);
+    const result = await runAgent(
+      deps({
+        llm: new SlowProvider(contract(GREEN), 80),
+        runDeadlineMs: 30,
+        sandbox,
+      }),
+    );
+    expect(result.status).toBe("run_deadline");
+    expect(result.iterations.length).toBe(0);
+    expect(sandbox.calls.length).toBe(0);
+  });
+
+  it("H4: a fully green iteration completed after the deadline is NEVER success", async () => {
+    // The budget dies during the gates (slow sandbox stage): the green
+    // verdict is still blocked — the completed iteration stays in the
+    // transcript, but the terminal status is honest.
+    class DelayedSandbox implements SandboxRuntime {
+      calls: string[] = [];
+      async execute(code: string): Promise<ExecuteResult> {
+        this.calls.push(code);
+        await new Promise((r) => setTimeout(r, 80));
+        return PASS;
+      }
+    }
+    const sandbox = new DelayedSandbox();
+    const result = await runAgent(deps({ runDeadlineMs: 30, sandbox }));
+    expect(result.status).toBe("run_deadline");
+    expect(result.iterations.length).toBe(1);
+    expect(result.iterations[0].sandbox).not.toBeNull();
+    expect(result.iterations[0].sandbox?.tests.every((t) => t.passed)).toBe(true);
   });
 
   it("llm_malformed: one corrective retry, then the run terminates malformed", async () => {

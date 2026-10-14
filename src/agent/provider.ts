@@ -30,7 +30,11 @@ export class LlmError extends Error {
 
 export interface LlmProvider {
   readonly id: string;
-  complete(messages: LlmMessage[]): Promise<LlmCompletion>;
+  // opts.deadlineMs (v5 H4): the caller's run deadline (performance.now
+  // clock). Implementations MUST bound their attempts by it — no fresh
+  // timeout per attempt, and a retry only fires while budget remains.
+  // Optional so existing providers/stubs stay valid.
+  complete(messages: LlmMessage[], opts?: { deadlineMs?: number }): Promise<LlmCompletion>;
 }
 
 export interface LlmProviderEnv {
@@ -93,18 +97,33 @@ export class OpenAiCompatibleLlmProvider implements LlmProvider {
     private readonly timeoutMs: number,
   ) {}
 
-  async complete(messages: LlmMessage[]): Promise<LlmCompletion> {
+  async complete(messages: LlmMessage[], opts?: { deadlineMs?: number }): Promise<LlmCompletion> {
+    // v5 H4: the run deadline bounds EVERY attempt — each attempt gets the
+    // remaining budget (never a fresh full timeout), and the retry is
+    // skipped outright once the budget is gone.
+    const remainingMs = (): number => {
+      if (opts?.deadlineMs === undefined) return this.timeoutMs;
+      return Math.min(this.timeoutMs, opts.deadlineMs - performance.now());
+    };
+    let budget = remainingMs();
+    if (budget <= 0) {
+      throw new LlmError("llm deadline exhausted before the request", false);
+    }
     try {
-      return await this.callOnce(messages);
+      return await this.callOnce(messages, budget);
     } catch (err) {
       if (err instanceof LlmError && err.retryable) {
-        return await this.callOnce(messages);
+        budget = remainingMs();
+        if (budget <= 0) {
+          throw new LlmError("llm deadline exhausted before the retry", false);
+        }
+        return await this.callOnce(messages, budget);
       }
       throw err;
     }
   }
 
-  private async callOnce(messages: LlmMessage[]): Promise<LlmCompletion> {
+  private async callOnce(messages: LlmMessage[], timeoutMs: number): Promise<LlmCompletion> {
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/chat/completions`, {
