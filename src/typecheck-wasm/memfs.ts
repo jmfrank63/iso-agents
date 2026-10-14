@@ -109,3 +109,28 @@ export function createMemoryFileSystem(files: Map<string, string> = new Map()): 
     },
   };
 }
+
+// Held-fs bridge sync (v5 H3): bring `fs` EXACTLY to `files`. Obsolete paths
+// are removed BEFORE replacements are written — the old write-first order
+// left the previous check's conflicts in place during the writes, so a file
+// that became a parent directory ("dir.ts" -> "dir.ts/guest.ts") failed with
+// "mkdir ...: not a directory" on EVERY subsequent check, and the throw
+// escaped before the instance could be recycled. Unchanged paths are
+// skipped so their monotonic mtimeNs stamps (the fork's parse-cache key)
+// survive untouched. Throws on the first write error (the shim's held-run
+// catch turns that into a full held-state drop).
+export function syncFiles(fs: MemoryFileSystem, files: Map<string, string>): void {
+  for (const path of [...fs.files.keys()]) {
+    if (!files.has(path)) {
+      fs.remove(path);
+    }
+  }
+  for (const [path, content] of files) {
+    if (fs.readFile(path) !== content) {
+      const err = fs.writeFile(path, ENCODER.encode(content), false);
+      if (err !== undefined) {
+        throw new Error(`seeding ${path} failed: ${err}`);
+      }
+    }
+  }
+}

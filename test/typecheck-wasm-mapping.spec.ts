@@ -4,7 +4,7 @@ import {
   mapWasmDiagnostics,
   type WasmDiagnostic,
 } from "../src/typecheck-wasm/mapping";
-import { createMemoryFileSystem } from "../src/typecheck-wasm/memfs";
+import { createMemoryFileSystem, syncFiles } from "../src/typecheck-wasm/memfs";
 
 // Pure-mapping coverage for the tsc-rs-wasm checker (small-module
 // discipline — mapping.ts and memfs.ts have zero runtime imports, so this
@@ -183,5 +183,64 @@ describe("wasm memfs monotonic mtime stamps (FORK-02)", () => {
     const fs = createMemoryFileSystem();
     fs.writeFile("/app/guest.ts", new TextEncoder().encode("x"), false);
     expect(fs.stat("/app/guest.ts")!.mtimeNs).toBe(fs.stat("/app/guest.ts")!.mtimeNs);
+  });
+});
+
+describe("held-fs bridge sync ordering (v5 H3)", () => {
+  const bytes = (s: string) => new TextEncoder().encode(s);
+
+  // The reviewer's repro shape: a previous check's FILE at a path that the
+  // next check needs as a PARENT DIRECTORY. Write-first ordering failed the
+  // write with "mkdir ...: not a directory" on every retry; remove-first
+  // clears the conflict before the write.
+  it("removes obsolete paths BEFORE writing replacements (file -> child of that name)", () => {
+    const fs = createMemoryFileSystem(new Map([["/app/dir.ts", "previous check's file"]]));
+    const order: string[] = [];
+    const realRemove = fs.remove.bind(fs);
+    const realWrite = fs.writeFile.bind(fs);
+    fs.remove = (path) => {
+      order.push(`remove ${path}`);
+      return realRemove(path);
+    };
+    fs.writeFile = (path, data, append) => {
+      order.push(`write ${path}`);
+      return realWrite(path, data, append);
+    };
+    syncFiles(fs, new Map([["/app/dir.ts/guest.ts", "export {};\n"]]));
+    expect(order).toEqual(["remove /app/dir.ts", "write /app/dir.ts/guest.ts"]);
+    expect(fs.readFile("/app/dir.ts/guest.ts")).toBe("export {};\n");
+    expect(fs.readFile("/app/dir.ts")).toBeUndefined();
+  });
+
+  it("brings the fs exactly to the target set in both directions", () => {
+    const fs = createMemoryFileSystem(new Map([["/app/guest.ts", "v1"]]));
+    syncFiles(fs, new Map([["/app/other.ts", "v2"]]));
+    expect([...fs.files.keys()].sort()).toEqual(["/app/other.ts"]);
+    syncFiles(fs, new Map([["/app/guest.ts", "v1"]]));
+    expect([...fs.files.keys()]).toEqual(["/app/guest.ts"]);
+  });
+
+  it("skips unchanged files so their mtime stamps (parse-cache keys) survive", () => {
+    const fs = createMemoryFileSystem();
+    fs.writeFile("/app/guest.ts", bytes("same"), false);
+    const stamped = fs.stat("/app/guest.ts")!.mtimeNs!;
+    const order: string[] = [];
+    const realWrite = fs.writeFile.bind(fs);
+    fs.writeFile = (path, data, append) => {
+      order.push(path);
+      return realWrite(path, data, append);
+    };
+    syncFiles(fs, new Map([["/app/guest.ts", "same"], ["/app/new.ts", "x"]]));
+    expect(order).toEqual(["/app/new.ts"]);
+    expect(fs.stat("/app/guest.ts")!.mtimeNs).toBe(stamped);
+  });
+
+  it("throws on a write error, naming the path", () => {
+    // A self-contradictory target (file + child under it) still fails the
+    // write honestly — after remove-first the conflict is the target's own.
+    const fs = createMemoryFileSystem();
+    expect(() =>
+      syncFiles(fs, new Map([["/app/a.ts", "x"], ["/app/a.ts/nested.ts", "y"]])),
+    ).toThrow(/seeding \/app\/a\.ts\/nested\.ts failed: .*not a directory/);
   });
 });

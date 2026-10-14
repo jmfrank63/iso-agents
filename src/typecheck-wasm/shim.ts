@@ -39,7 +39,7 @@
 // .join("\0") UTF-8; flags bit 0 = diagnostics JSON, bit 1 =
 // case-insensitive; proc_exit surfaces as a thrown WasiExit.
 import wasmModule from "./ts_rust.wasm";
-import { createMemoryFileSystem, type MemoryFileSystem } from "./memfs";
+import { createMemoryFileSystem, syncFiles, type MemoryFileSystem } from "./memfs";
 import type { WasmDiagnostic } from "./mapping";
 
 // Fork provenance (FORK-01): the committed artifact is built from the
@@ -504,24 +504,6 @@ export function heldRunStats(): HeldRunStats {
   };
 }
 
-// Sync the check's files into the held fs BEFORE ts_run: write changed/new
-// files (each write stamps a fresh monotonic mtimeNs — the fork's parse-
-// cache key) and REMOVE files the check no longer has (a stale guest would
-// otherwise join include: ["*.ts"] and pollute the diagnostics).
-function syncHeldFiles(fs: MemoryFileSystem, files: Map<string, string>): void {
-  for (const [path, content] of files) {
-    if (fs.readFile(path) !== content) {
-      const err = fs.writeFile(path, ENCODER.encode(content), false);
-      if (err !== undefined) {
-        throw new Error(`runTscHeld: seeding ${path} failed: ${err}`);
-      }
-    }
-  }
-  for (const path of [...fs.files.keys()]) {
-    if (!files.has(path)) fs.remove(path);
-  }
-}
-
 export interface HeldRunResult extends WasmRunResult {
   instanceGen: number;
   runsOnInstance: number;
@@ -572,37 +554,53 @@ export function runTscHeld(
   const fs = heldFs!;
   const prepared = heldPrepared!;
   const instance = heldInstance;
-  syncHeldFiles(fs, options.files);
-  heldStdoutChunks.length = 0;
-  heldStderrChunks.length = 0;
-  const tRun = performance.now();
-  const tsRun = prepared.start(instance); // also resets the stderr accumulator
-  let exitCode = SUCCESS;
-  let error: unknown;
-  heldRunsOnInstance += 1;
-  heldRunsTotal += 1;
+  // v5 H3: the WHOLE per-request window — held-fs sync, input prep,
+  // ts_run and result decode — sits inside ONE try whose catch drops the
+  // held state on ANY exception. Previously a sync failure escaped before
+  // any drop (the poisoned fs stayed held: the reviewer's dir-file ->
+  // dir/guest.ts repro 500-ed on every retry, same instance gen), and both
+  // prepared.start() and result() ran outside the catch entirely.
   try {
-    exitCode = tsRun();
-  } catch (thrown) {
-    error = thrown;
-    // RECYCLE ON ANY THROW (07-RESEARCH): a WasiExit here is the panic-hook
-    // exit (normal exits arrive as ts_run's RETURN value — 0 clean, 2 =
-    // diagnostics found, NOT an error — probe-proven: red guests stayed
-    // warm with memory flat runs 2-50), and a non-WasiExit throw is the
-    // trap/RangeError class. Post-panic Rust state is undefined (a panic
-    // between install_program_version and end_run leaves the version
-    // bookkeeping mid-flight), so drop the instance BEFORE reporting; the
-    // local `prepared` still parses result() against the dying instance.
+    syncFiles(fs, options.files);
+    heldStdoutChunks.length = 0;
+    heldStderrChunks.length = 0;
+    const tRun = performance.now();
+    const tsRun = prepared.start(instance); // also resets the stderr accumulator
+    let exitCode = SUCCESS;
+    let error: unknown;
+    heldRunsOnInstance += 1;
+    heldRunsTotal += 1;
+    try {
+      exitCode = tsRun();
+    } catch (thrown) {
+      error = thrown;
+      // RECYCLE ON ANY THROW (07-RESEARCH): a WasiExit here is the panic-hook
+      // exit (normal exits arrive as ts_run's RETURN value — 0 clean, 2 =
+      // diagnostics found, NOT an error — probe-proven: red guests stayed
+      // warm with memory flat runs 2-50), and a non-WasiExit throw is the
+      // trap/RangeError class. Post-panic Rust state is undefined (a panic
+      // between install_program_version and end_run leaves the version
+      // bookkeeping mid-flight), so drop the instance BEFORE reporting; the
+      // local `prepared` still parses result() against the dying instance.
+      dropHeldInstance();
+    }
+    const { exitCode: code, diagnostics } = prepared.result(exitCode, error);
+    return {
+      exitCode: code,
+      diagnostics,
+      stdout: heldStdoutChunks.join("").slice(0, 65536),
+      stderr: heldStderrChunks.join("").slice(0, 65536),
+      timings: { instantiateMs, runMs: performance.now() - tRun },
+      instanceGen: servedGen,
+      runsOnInstance: heldRunsOnInstance,
+    };
+  } catch (err) {
+    // Drop the held instance AND its fs so no half-synced file set or
+    // poisoned runtime survives the failure — the next check starts fresh
+    // (2-8 ms from the compiled Module). dropHeldInstance is idempotent,
+    // so a ts_run throw that already dropped still lands here safely when
+    // result() rethrows the trap class.
     dropHeldInstance();
+    throw err;
   }
-  const { exitCode: code, diagnostics } = prepared.result(exitCode, error);
-  return {
-    exitCode: code,
-    diagnostics,
-    stdout: heldStdoutChunks.join("").slice(0, 65536),
-    stderr: heldStderrChunks.join("").slice(0, 65536),
-    timings: { instantiateMs, runMs: performance.now() - tRun },
-    instanceGen: servedGen,
-    runsOnInstance: heldRunsOnInstance,
-  };
 }

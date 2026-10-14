@@ -387,6 +387,38 @@ async function legA() {
       extPost.json,
     );
 
+    // -- v5 H3: held-fs sync removes obsolete paths BEFORE writing. The
+    // reviewer's repro: a check with a FILE where the next check needs a
+    // DIRECTORY hit "mkdir /app/dir: not a directory" on every retry, same
+    // instance gen (the sync throw escaped before any recycle). Here the
+    // file->parent shape is dir.ts -> dir.ts/guest.ts (H2's extension guard
+    // rules out a bare extensionless "dir", so the .ts form proves the same
+    // ordering bug). --
+    const dirFile1 = await post(port, "/typecheck", JSON.stringify({ files: { "dir.ts": GREEN }, runs: 1 }));
+    assert(
+      dirFile1.status === 200 && dirFile1.json.data.results[0].ok === true,
+      "H3: check holding dir.ts as a file succeeds",
+      dirFile1.json,
+    );
+    const genBeforeH3 = dirFile1.json.data.held.instanceGen;
+    const dirFile2 = await post(
+      port,
+      "/typecheck",
+      JSON.stringify({ files: { "dir.ts/guest.ts": GREEN }, runs: 1 }),
+    );
+    assert(
+      dirFile2.status === 200 &&
+        dirFile2.json.ok === true &&
+        dirFile2.json.data.results[0].ok === true,
+      "H3: dir.ts then dir.ts/guest.ts — the second check SUCCEEDS (was a repeated mkdir 500)",
+      dirFile2.json,
+    );
+    assert(
+      dirFile2.json.data.held.instanceGen === genBeforeH3,
+      "H3: the ordered sync needed no recycle (same held instance generation)",
+      { before: genBeforeH3, after: dirFile2.json.data.held.instanceGen },
+    );
+
     // -- the agent loop runs over the SELECTED checker (factory routing; the
     // loop, /agent/shell and /typecheck share the one getTypechecker(env) seam) --
     const slug = await post(port, "/agent/run", JSON.stringify({ task: SLUG_TASK, spec: SLUG_SPEC }));
