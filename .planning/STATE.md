@@ -7,7 +7,7 @@
 
 ## Current Focus
 
-**Milestone v4: complete** — four milestones shipped
+**Milestone v5: complete** — five milestones shipped (v5 = Sol-review hardening + upstream PR #85 + launch runbook)
 
 ## Position
 

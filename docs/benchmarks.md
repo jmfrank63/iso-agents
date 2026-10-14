@@ -4,15 +4,15 @@ Reproduce with `npm run bench:tsc-rs` — it boots THREE `wrangler dev` workers 
 TSCHECKER=tsc-rs-wasm fresh via TSCHECKER_WASM_RECYCLE_AFTER:1 + TSCHECKER=tsc-rs-wasm held),
 prints this table, and rewrites this file. README.md commits the same numbers.
 
-Generated: 2026-10-13T22:02:46.544Z
+Generated: 2026-10-13T22:12:03.350Z
 
 | snippet          | tsc-rs cold ms | tsc-rs warm med(10) | tsc-rs warm min | ts-js cold ms | ts-js warm med(5) | wasm fresh cold ms | wasm fresh warm med(5) | wasm held cold ms | wasm held warm med(5) | errors (exp/got) |
 |------------------|----------------|---------------------|-----------------|---------------|-------------------|--------------------|------------------------|-------------------|-----------------------|------------------|
-| slugify-iter1    | 40.6 | 31.3 | 28.6 | 232.0 | 7.0 | 550.0 | 177.0 | 562.0 | 93.0 | 2/2 |
-| slugify-final    | 36.2 | 30.3 | 28.2 | 7.0 | 6.0 | 156.0 | 155.0 | 90.0 | 82.0 | 0/0 |
-| fibonacci-final  | 33.9 | 30.1 | 27.4 | 11.0 | 5.0 | 155.0 | 154.0 | 85.0 | 78.0 | 0/0 |
-| lib-heavy        | 34.3 | 30.5 | 27.9 | 32.0 | 12.0 | 153.0 | 148.0 | 86.0 | 75.0 | 0/0 |
-| synthetic-100    | 33.6 | 30.8 | 29.3 | 21.0 | 13.0 | 163.0 | 153.0 | 81.0 | 75.0 | 0/0 |
+| slugify-iter1    | 37.0 | 30.3 | 28.9 | 234.0 | 8.0 | 541.0 | 181.0 | 571.0 | 93.0 | 2/2 |
+| slugify-final    | 34.4 | 30.0 | 28.6 | 7.0 | 5.0 | 168.0 | 157.0 | 90.0 | 79.0 | 0/0 |
+| fibonacci-final  | 34.5 | 30.2 | 28.5 | 12.0 | 4.0 | 149.0 | 147.0 | 88.0 | 78.0 | 0/0 |
+| lib-heavy        | 31.9 | 30.1 | 27.8 | 31.0 | 11.0 | 156.0 | 151.0 | 83.0 | 77.0 | 0/0 |
+| synthetic-100    | 33.9 | 30.4 | 28.6 | 21.0 | 12.0 | 156.0 | 152.0 | 83.0 | 74.0 | 0/0 |
 
 tsc-rs native spawn+init: 2.5 ms median across the 5 API instances (not part of the cold column).
 Machine: linux arm64, v24.19.0, tsc-rs 0.2.0 (native), workerd via wrangler dev, typescript 6.0.3 in-isolate (ts-js), ts-rust wasm multi-run/c1b8218339d0 (fork of pin 569df52) in-isolate (TSCHECKER=tsc-rs-wasm; fresh = TSCHECKER_WASM_RECYCLE_AFTER:1 boot, held = default boot).
