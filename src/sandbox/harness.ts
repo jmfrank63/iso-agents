@@ -84,6 +84,10 @@ export function makeHarness(globalObject: object): HarnessRecord[] {
     return true;
   };
   const shown = function (value: unknown): string {
+    // JSON renders NaN/Infinity as null — show the truth instead (H6).
+    if (typeof value === "number" && !isFinite(value)) {
+      return String(value);
+    }
     try {
       const text = JSON.stringify(value);
       return text === undefined ? String(value) : text;

@@ -143,6 +143,67 @@ describe("harness private test records (H5)", () => {
   });
 });
 
+// H6 behavioral proofs: type-aware assertions — the old JSON.stringify
+// equality made NaN "equal" anything that stringified identically and
+// treated undefined as equal to a function; toBeCloseTo silently PASSED on
+// NaN because `NaN > tolerance` is false.
+describe("harness type-aware assertions (H6)", () => {
+  const run = (): { global: Record<string, unknown>; records: HarnessRecord[] } => {
+    const global: Record<string, unknown> = {};
+    return { global, records: makeHarness(global) };
+  };
+  const expectOn = (global: Record<string, unknown>): (actual: unknown) => Record<string, (...a: unknown[]) => void> =>
+    global.expect as never;
+
+  it("expect(NaN).toBeCloseTo(42) fails (was a false pass)", () => {
+    const { global, records } = run();
+    expect(() => expectOn(global)(NaN).toBeCloseTo(42)).toThrow(/toBeCloseTo needs finite numbers/);
+    expect(() => expectOn(global)(42).toBeCloseTo(NaN)).toThrow(/toBeCloseTo needs finite numbers/);
+    expect(() => expectOn(global)(NaN).toBeCloseTo(NaN)).toThrow(/toBeCloseTo needs finite numbers/);
+    expect(records).toEqual([]);
+  });
+
+  it("expect(NaN).toEqual(null) fails (was a false pass: identical JSON)", () => {
+    const { global } = run();
+    expect(() => expectOn(global)(NaN).toEqual(null)).toThrow(/expected null, got NaN/);
+    expect(() => expectOn(global)(NaN).toEqual(NaN)).toThrow(/expected NaN, got NaN/);
+    expect(() => expectOn(global)(null).toEqual(NaN)).toThrow(/expected NaN, got null/);
+  });
+
+  it("undefined is never structurally equal to a function (was a false pass)", () => {
+    const { global } = run();
+    expect(() => expectOn(global)(undefined).toEqual(() => 1)).toThrow();
+    expect(() => expectOn(global)(() => 1).toEqual(undefined)).toThrow();
+  });
+
+  it("structural equality still passes honest data (arrays, nested objects, primitives)", () => {
+    const { global } = run();
+    const expectFn = expectOn(global);
+    expectFn(1).toEqual(1);
+    expectFn("a").toEqual("a");
+    expectFn({ a: 1, b: [1, { c: "x" }] }).toEqual({ a: 1, b: [1, { c: "x" }] });
+    expectFn([1, 2, 3]).toEqual([1, 2, 3]);
+    expect(() => expectFn({ a: 1 }).toEqual({ a: 2 })).toThrow(/expected {"a":2}, got {"a":1}/);
+    expect(() => expectFn([1, 2]).toEqual([1, 2, 3])).toThrow();
+    expect(() => expectFn([1, 2, 3]).toEqual([1, 2])).toThrow();
+  });
+
+  it("toBeCloseTo still passes honest numbers and honors the tolerance", () => {
+    const { global } = run();
+    const expectFn = expectOn(global);
+    expectFn(0.1 + 0.2).toBeCloseTo(0.3);
+    expectFn(1.0).toBeCloseTo(1.0001, 0.001);
+    expect(() => expectFn(1.0).toBeCloseTo(1.1)).toThrow(/expected ~1.1, got 1/);
+    expect(() => expectFn(1.0).toBeCloseTo(1.1, -1)).toThrow(/tolerance/);
+    expect(() => expectFn("1").toBeCloseTo(1)).toThrow(/toBeCloseTo needs finite numbers/);
+  });
+
+  it("Infinity fails toBeCloseTo like NaN (finite operands only)", () => {
+    const { global } = run();
+    expect(() => expectOn(global)(Infinity).toBeCloseTo(42)).toThrow(/finite numbers/);
+  });
+});
+
 describe("sandbox identity", () => {
   it("reports unloaded before the first execution", () => {
     expect(getSandboxIdentity()).toBe("unloaded");
