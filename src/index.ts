@@ -12,7 +12,7 @@ import {
   type LlmProvider,
 } from "./agent/provider";
 import { MOCK_PROVIDER_ID } from "./agent/mock";
-import { runAgent } from "./agent/loop";
+import { runAgent, AgentLoopError } from "./agent/loop";
 import { runShellSession, ShellBadRequestError, type ShellSessionResult } from "./shell/shell";
 
 export interface Env {
@@ -228,9 +228,11 @@ interface AgentRunBody {
 // finishes in seconds; async/job polling is out of scope). The provider is
 // built PER REQUEST (mock call-counter state is per-run), the record is
 // created BEFORE the loop and finalized AFTER it, and the response IS the
-// stored record (POST and GET return byte-identical data). An unexpected
-// throw still yields the Phase 1 500 envelope; the record stays `running`
-// (prototype honesty, noted here by design).
+// stored record (POST and GET return byte-identical data). v5 H8: an
+// unexpected failure anywhere in construction or the loop finalizes the run
+// with a terminal `internal_error` (partial transcript preserved via
+// AgentLoopError) BEFORE the Phase 1 500 envelope is returned — no stored
+// record can stay "running" while its request already failed.
 async function handleAgentRun(request: Request, env: Env): Promise<Response> {
   const body = (await parseJsonBody(request)) as AgentRunBody | null;
   if (
@@ -265,34 +267,47 @@ async function handleAgentRun(request: Request, env: Env): Promise<Response> {
   const llmTimeoutMs = parseOptionalPositiveInt(env.LLM_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS);
 
   const run = runRegistry.create(body.task);
-  let llm: LlmProvider;
   try {
-    llm = createLlmProvider(env, llmTimeoutMs);
-  } catch {
-    // Misconfigured openai env ("requires LLM_BASE_URL and LLM_MODEL") —
-    // honest terminal state on the record, not a 500 (research decision).
-    runRegistry.finalize(run, "llm_error", [], null);
+    let llm: LlmProvider;
+    try {
+      llm = createLlmProvider(env, llmTimeoutMs);
+    } catch {
+      // Misconfigured openai env ("requires LLM_BASE_URL and LLM_MODEL") —
+      // honest terminal state on the record, not a 500 (research decision).
+      runRegistry.finalize(run, "llm_error", [], null);
+      return json({ ok: true, data: run }, 200);
+    }
+    // G6 semantics: MOCK_FAIL_AFTER caps the loop's maxIterations for MOCK runs
+    // only, so a capped mock run ends max_iterations while the mock is still
+    // replaying its broken-first iterations.
+    if (llm.id === MOCK_PROVIDER_ID) {
+      maxIterations = Math.min(maxIterations, parseOptionalPositiveInt(env.MOCK_FAIL_AFTER, Number.MAX_SAFE_INTEGER));
+    }
+    const result = await runAgent({
+      task: body.task,
+      spec: body.spec,
+      maxIterations,
+      runDeadlineMs,
+      llm,
+      typechecker: getTypechecker(env),
+      sandbox: getSandboxRuntime(env),
+      transpile: transpileGuest,
+    });
+    // finalize mutates the stored record IN PLACE — `run` IS the stored record.
+    runRegistry.finalize(run, result.status, result.iterations, result.timings);
     return json({ ok: true, data: run }, 200);
+  } catch (err) {
+    // v5 H8: checker/transpiler/sandbox/module exceptions used to bypass
+    // finalization entirely (the record stayed `running` while the outer
+    // fetch handler answered 500). Finalize with a terminal internal_error
+    // and the partial transcript, then re-raise through the same 500
+    // envelope the Phase 1 route contract promises.
+    const iterations = err instanceof AgentLoopError ? err.iterations : run.iterations;
+    console.error(`[worker] POST /agent/run failed (run ${run.id}):`, err);
+    runRegistry.finalize(run, "internal_error", iterations, null);
+    const message = err instanceof Error ? err.message : String(err);
+    return fail(500, "internal", `agent run failed: ${message}`, { runId: run.id });
   }
-  // G6 semantics: MOCK_FAIL_AFTER caps the loop's maxIterations for MOCK runs
-  // only, so a capped mock run ends max_iterations while the mock is still
-  // replaying its broken-first iterations.
-  if (llm.id === MOCK_PROVIDER_ID) {
-    maxIterations = Math.min(maxIterations, parseOptionalPositiveInt(env.MOCK_FAIL_AFTER, Number.MAX_SAFE_INTEGER));
-  }
-  const result = await runAgent({
-    task: body.task,
-    spec: body.spec,
-    maxIterations,
-    runDeadlineMs,
-    llm,
-    typechecker: getTypechecker(env),
-    sandbox: getSandboxRuntime(env),
-    transpile: transpileGuest,
-  });
-  // finalize mutates the stored record IN PLACE — `run` IS the stored record.
-  runRegistry.finalize(run, result.status, result.iterations, result.timings);
-  return json({ ok: true, data: run }, 200);
 }
 
 interface SandboxExecuteBody {

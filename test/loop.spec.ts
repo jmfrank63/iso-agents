@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runAgent, type AgentLoopDeps } from "../src/agent/loop";
+import { AgentLoopError, runAgent, type AgentLoopDeps } from "../src/agent/loop";
 import { LlmError, type LlmCompletion, type LlmMessage, type LlmProvider } from "../src/agent/provider";
 import type { ExecuteResult, SandboxRuntime } from "../src/sandbox/runtime";
 import type { TranspileResult } from "../src/typecheck/transpile";
@@ -230,6 +230,35 @@ describe("runAgent", () => {
     expect(llm.calls).toBe(2);
     expect(result.iterations.length).toBe(1);
     expect(result.iterations[0].typecheck).toBeNull();
+  });
+
+  it("H8: an unexpected checker crash rejects with AgentLoopError carrying the partial transcript", async () => {
+    class ThrowOnSecondCheck implements Typechecker {
+      readonly id = "stub-throw-later";
+      private calls = 0;
+      async check(_files: Map<string, string>): Promise<TypecheckResult> {
+        this.calls += 1;
+        if (this.calls === 1) {
+          return BAD_CHECK;
+        }
+        throw new RangeError("wasm trap: stack exhaustion");
+      }
+    }
+    const err = await runAgent(
+      deps({
+        llm: new StubProvider([contract(BROKEN), contract(GREEN)]),
+        typechecker: new ThrowOnSecondCheck(),
+        sandbox: new StubSandbox([PASS]),
+      }),
+    ).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AgentLoopError);
+    const loopErr = err as AgentLoopError;
+    // Iteration 1 (failed typecheck gate) completed BEFORE iteration 2's
+    // checker crash — the partial transcript must survive for H8's
+    // internal_error finalization.
+    expect(loopErr.iterations.length).toBe(1);
+    expect(loopErr.iterations[0].typecheck?.ok).toBe(false);
+    expect(loopErr.message).toContain("stack exhaustion");
   });
 
   it("a test-less guest gets explicit feedback and the loop continues", async () => {

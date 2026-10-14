@@ -41,6 +41,20 @@ export interface AgentRunResult {
   timings: AgentTimings;
 }
 
+// v5 H8: an unexpected seam failure (checker crash, transpiler bug, sandbox
+// module failure) must not leave the run record "running" forever. The loop
+// wraps EVERYTHING it iterates; on a throw it attaches the iterations
+// completed so far as the partial transcript so the HTTP layer can finalize
+// honestly before answering 500.
+export class AgentLoopError extends Error {
+  constructor(
+    readonly iterations: AgentIteration[],
+    cause: unknown,
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
 export interface AgentLoopDeps {
   task: string;
   spec: string;
@@ -105,7 +119,7 @@ function rootFiles(files: Record<string, string>): Map<string, string> {
   );
 }
 
-export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
+async function runLoop(deps: AgentLoopDeps, iterations: AgentIteration[]): Promise<AgentRunResult> {
   const t0 = performance.now();
   const deadline = t0 + deps.runDeadlineMs;
   // G10 + v5 H4: the deadline is ONE wall-clock budget captured at run
@@ -115,7 +129,6 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
   // provider, cold wasm check) could still be followed by check+execute
   // and a `success` verdict issued after the deadline.
   const expired = (): boolean => performance.now() >= deadline;
-  const iterations: AgentIteration[] = [];
   const totals = { llmMs: 0, typecheckMs: 0, transpileMs: 0, sandboxMs: 0 };
   const finish = (status: AgentStatus): AgentRunResult => ({
     status,
@@ -349,4 +362,16 @@ export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
   }
 
   return finish("max_iterations");
+}
+
+// v5 H8: the public entry — an unexpected throw from any seam carries the
+// iterations completed so far as the partial transcript (AgentLoopError) so
+// the HTTP layer can finalize the record before answering 500.
+export async function runAgent(deps: AgentLoopDeps): Promise<AgentRunResult> {
+  const iterations: AgentIteration[] = [];
+  try {
+    return await runLoop(deps, iterations);
+  } catch (err) {
+    throw new AgentLoopError(iterations, err);
+  }
 }
