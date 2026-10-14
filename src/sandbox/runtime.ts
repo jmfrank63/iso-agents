@@ -15,6 +15,7 @@ import wasmfileVariant from "@jitl/quickjs-wasmfile-release-sync";
 // live-verified replacement (03-RESEARCH).
 import wasmModule from "./quickjs.wasm";
 import { findAsyncUsage } from "./gate";
+import { fitLogArgs, jsonSafe, MAX_LOG_BYTES } from "./console";
 import { HARNESS_SOURCE } from "./harness";
 import { markSandboxLoaded } from "./identity";
 import {
@@ -70,7 +71,6 @@ function getModule(): Promise<QuickJSWASMModule> {
 }
 
 const LOG_LEVELS = ["log", "info", "warn", "error"] as const;
-const MAX_LOG_BYTES = 8192; // console buffer soft cap (03-RESEARCH console capture)
 const OPS_BACKSTOP_MULTIPLIER = 4; // handler ≈2.1 calls/ms measured; secondary guard only
 
 function describeError(err: unknown): string {
@@ -108,25 +108,30 @@ function isInterrupt(d: unknown): boolean {
 // message, stack}, circulars -> "[object Object]"), dispose EVERY handle
 // (VmFunctionImplementation's `this` param is type-level only — the FFI
 // applies the guest args directly; no leading this-handle arrives).
+// v5 H9: every dumped arg passes jsonSafe() BEFORE byte accounting, so a
+// guest BigInt can no longer throw inside stringify accounting and a
+// cyclic structure cannot poison later serializations. v5 H10: retention
+// is bounded per entry — oversized args are truncated/marked at capture
+// time, so a 1 MB log never retains 1 MB.
 function injectConsole(context: QuickJSContext, logs: SandboxLog[]): void {
   let logBytes = 0;
   const consoleObj = context.newObject();
   for (const level of LOG_LEVELS) {
     const fn = context.newFunction(level, (...argHandles: QuickJSHandle[]) => {
-      if (logBytes > MAX_LOG_BYTES) {
+      const remaining = MAX_LOG_BYTES - logBytes;
+      if (remaining <= 0) {
         for (const arg of argHandles) arg.dispose();
         return;
       }
-      const args = argHandles.map((handle): unknown => {
-        const dumped = context.dump(handle);
+      const dumped = argHandles.map((handle): unknown => {
+        const value = context.dump(handle);
         handle.dispose();
-        return dumped === undefined ? null : dumped;
+        const safe = jsonSafe(value);
+        return safe === undefined ? null : safe; // pre-existing null-mapping
       });
-      logBytes += args.reduce(
-        (n: number, a) => n + (typeof a === "string" ? a.length : JSON.stringify(a)?.length ?? 8) + 1,
-        0,
-      );
-      logs.push({ level, args });
+      const fitted = fitLogArgs(dumped, remaining);
+      logBytes += fitted.bytes;
+      logs.push({ level, args: fitted.args });
     });
     context.setProp(consoleObj, level, fn);
     fn.dispose();
@@ -213,7 +218,10 @@ export class QuickJsSandboxRuntime implements SandboxRuntime {
             error = stringifyDump(dumped);
           }
         } else {
-          result = context.dump(evalResult.value); // plain JSON-able data only
+          // v5 H9: a guest BigInt (1n) used to survive dump() as a host
+          // BigInt and 500 the HTTP layer at JSON.stringify; one jsonSafe
+          // policy covers the result the same way it covers console args.
+          result = jsonSafe(context.dump(evalResult.value));
           evalResult.value.dispose();
         }
       }
