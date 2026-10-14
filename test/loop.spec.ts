@@ -273,4 +273,56 @@ describe("runAgent", () => {
     expect(result.iterations.length).toBe(2);
     expect(result.iterations[0].feedback).toContain("no test() calls found");
   });
+
+  it("H11: a timed-out guest's feedback leads with the failure, not just missing-tests text", async () => {
+    const timeoutExec: ExecuteResult = {
+      status: "timeout",
+      logs: [],
+      tests: [],
+      error: "execution exceeded the 2000ms sandbox deadline",
+      ms: 1,
+    };
+    const result = await runAgent(
+      deps({
+        llm: new StubProvider([contract(GREEN), contract(GREEN)]),
+        sandbox: new StubSandbox([timeoutExec, PASS]),
+      }),
+    );
+    expect(result.status).toBe("success");
+    const fb = result.iterations[0].feedback!;
+    expect(fb.startsWith("sandbox timeout: execution exceeded the 2000ms sandbox deadline")).toBe(true);
+    expect(fb).toContain("no test() calls found");
+  });
+
+  it("H11: a crashed guest with no tests surfaces status + error first", async () => {
+    const crashExec: ExecuteResult = { status: "crash", logs: [], tests: [], error: "RangeError: boom", ms: 1 };
+    const result = await runAgent(
+      deps({
+        llm: new StubProvider([contract(GREEN), contract(GREEN)]),
+        sandbox: new StubSandbox([crashExec, PASS]),
+      }),
+    );
+    expect(result.status).toBe("success");
+    expect(result.iterations[0].feedback).toContain("sandbox crash: RangeError: boom");
+  });
+
+  it("H11: a failed status with registered tests keeps the full sandbox feedback", async () => {
+    const timedOutWithTests: ExecuteResult = {
+      status: "timeout",
+      logs: [],
+      tests: [{ name: "first", passed: true }],
+      error: "execution exceeded the 2000ms sandbox deadline",
+      ms: 1,
+    };
+    const result = await runAgent(
+      deps({
+        llm: new StubProvider([contract(GREEN), contract(GREEN)]),
+        sandbox: new StubSandbox([timedOutWithTests, PASS]),
+      }),
+    );
+    expect(result.status).toBe("success");
+    const fb = result.iterations[0].feedback!;
+    expect(fb).toContain("sandbox timeout: execution exceeded the 2000ms sandbox deadline");
+    expect(fb).toContain("fix and return the FULL file(s) again");
+  });
 });

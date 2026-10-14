@@ -344,10 +344,26 @@ async function runLoop(deps: AgentLoopDeps, iterations: AgentIteration[]): Promi
       return finish("success");
     }
 
+    // v5 H11: a guest that never ran cleanly (timeout/crash/gate rejection)
+    // used to be reported as ONLY "no test() calls found" when it had
+    // registered zero tests — hiding the real failure from the model. The
+    // execution status + error lead the feedback; the missing-tests hint is
+    // appended only as secondary context. "no test() calls found" stands
+    // alone only for a CLEAN execution that simply registered no tests.
     const fb =
-      exec.tests.length === 0
-        ? 'no test() calls found; add test("name", () => { expect(...) }) calls per the spec, and return the FULL file(s) again'
-        : formatSandboxFeedback(exec);
+      exec.status !== "ok"
+        ? [
+            `sandbox ${exec.status}${exec.error === undefined ? "" : `: ${exec.error}`}`,
+            ...(exec.tests.length === 0
+              ? [
+                  'no test() calls found; add test("name", () => { expect(...) }) calls per the spec',
+                ]
+              : []),
+            "fix and return the FULL file(s) again",
+          ].join("\n")
+        : exec.tests.length === 0
+          ? 'no test() calls found; add test("name", () => { expect(...) }) calls per the spec, and return the FULL file(s) again'
+          : formatSandboxFeedback(exec);
     iterations.push({
       n,
       llmMs: iterLlmMs,
