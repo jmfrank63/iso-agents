@@ -6,7 +6,7 @@
 // hundred KB worst case -> low MB, safely inside the 128 MB isolate — G8).
 import type { AgentIteration, AgentStatus, AgentTimings } from "./agent/loop";
 
-export type RunStatus = "running" | AgentStatus;
+export type RunStatus = "running" | AgentStatus | "internal_error";
 
 export interface RunRecord {
   id: string;
@@ -25,9 +25,25 @@ const runs = new Map<string, RunRecord>();
 export const runRegistry = {
   create(task: string): RunRecord {
     if (runs.size >= MAX_STORED_RUNS) {
-      const oldest = runs.keys().next();
-      if (oldest.done !== true) {
-        runs.delete(oldest.value);
+      // v5 H7 admission control: a RUNNING record belongs to an in-flight
+      // request — evicting it used to orphan that request's finalize (the
+      // registry lookup missed and the transcript stayed "running" forever).
+      // Prefer the oldest TERMINATED record; only when the store is all
+      // running (a >50-concurrent burst) fall back to plain FIFO so the
+      // cap still bounds memory.
+      let evicted = false;
+      for (const [id, record] of runs) {
+        if (record.status !== "running") {
+          runs.delete(id);
+          evicted = true;
+          break;
+        }
+      }
+      if (!evicted) {
+        const oldest = runs.keys().next();
+        if (oldest.done !== true) {
+          runs.delete(oldest.value);
+        }
       }
     }
     const run: RunRecord = {
@@ -46,15 +62,16 @@ export const runRegistry = {
   get(id: string): RunRecord | undefined {
     return runs.get(id);
   },
-  // Mutates the stored record in place — the caller's `create` reference IS
-  // the stored record, so the POST handler serializes it after finalize.
-  // finishedAt uses wall-clock ISO time (transcript timing fidelity is
-  // performance.now()'s job; this is registry bookkeeping).
-  finalize(id: string, status: RunStatus, iterations: AgentIteration[], timings: AgentTimings | null): void {
-    const run = runs.get(id);
-    if (run === undefined) {
-      return;
-    }
+  // v5 H7: finalizes the CALLER-HELD record reference — the object is
+  // mutated regardless of registry membership (create returns the stored
+  // object, so the normal path still mutates in place and the POST handler
+  // serializes it after finalize). A FIFO eviction while the run awaited
+  // its provider can no longer leave the transcript stuck "running": the
+  // evicted object still reaches its terminal status (its registry lookup
+  // simply 404s from then on). finishedAt uses wall-clock ISO time
+  // (transcript timing fidelity is performance.now()'s job; this is
+  // registry bookkeeping).
+  finalize(run: RunRecord, status: RunStatus, iterations: AgentIteration[], timings: AgentTimings | null): void {
     run.status = status;
     run.iterations = iterations;
     run.timings = timings;

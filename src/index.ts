@@ -271,7 +271,7 @@ async function handleAgentRun(request: Request, env: Env): Promise<Response> {
   } catch {
     // Misconfigured openai env ("requires LLM_BASE_URL and LLM_MODEL") —
     // honest terminal state on the record, not a 500 (research decision).
-    runRegistry.finalize(run.id, "llm_error", [], null);
+    runRegistry.finalize(run, "llm_error", [], null);
     return json({ ok: true, data: run }, 200);
   }
   // G6 semantics: MOCK_FAIL_AFTER caps the loop's maxIterations for MOCK runs
@@ -291,7 +291,7 @@ async function handleAgentRun(request: Request, env: Env): Promise<Response> {
     transpile: transpileGuest,
   });
   // finalize mutates the stored record IN PLACE — `run` IS the stored record.
-  runRegistry.finalize(run.id, result.status, result.iterations, result.timings);
+  runRegistry.finalize(run, result.status, result.iterations, result.timings);
   return json({ ok: true, data: run }, 200);
 }
 
