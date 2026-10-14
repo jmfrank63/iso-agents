@@ -36,10 +36,14 @@ import {
 // source + the trusted globals), not the old include: ["*.ts"] wildcard —
 // the wildcard matched /app's immediate directory only, so a nested
 // /app/dir/guest.ts was silently never checked (review finding 1). The
-// text is a pure function of the file-name set: identical sets produce
-// byte-identical configs, so the held instance's parse cache still reuses
-// tsconfig across unchanged checks; only a changed file set re-parses it
-// (a ~100-byte JSON file).
+// entries are /app-ANCHORED ABSOLUTE paths: live-probed (v5 remediation),
+// ts_goport resolves relative tsconfig `files` entries against the process
+// cwd (frozen to "/" for held runs) instead of the tsconfig directory —
+// bare "guest.ts" came back TS6053 "File '/guest.ts' not found". Absolute
+// names are resolution-base-independent. The text is a pure function of
+// the file-name set: identical sets produce byte-identical configs, so the
+// held instance's parse cache still reuses tsconfig across unchanged
+// checks; only a changed file set re-parses it (a ~100-byte JSON file).
 function projectTsconfig(fileNames: string[]): string {
   return JSON.stringify({
     compilerOptions: { strict: true, target: "es2022", lib: ["es2022"] },
@@ -66,7 +70,9 @@ export class TscRsWasmTypechecker implements Typechecker {
     // HTTP layer maps it to 400; the agent loop treats it as an internal
     // error — no entry point bypasses the seed guard).
     const guestNames = [...files.keys()].map(assertValidGuestFile);
-    const seededNames = [...new Set([...guestNames, "guest-globals.d.ts"])].sort();
+    const seededNames = [
+      ...new Set([...guestNames, "guest-globals.d.ts"].map((n) => `/app${canonicalGuestPath(n)}`)),
+    ].sort();
     const wasmFiles = new Map<string, string>([
       ["/app/tsconfig.json", projectTsconfig(seededNames)],
     ]);
