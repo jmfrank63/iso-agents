@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ASYNC_SOURCE_PATTERN, findAsyncUsage } from "../src/sandbox/gate";
-import { HARNESS_SOURCE } from "../src/sandbox/harness";
+import { HARNESS_SOURCE, makeHarness, type HarnessRecord } from "../src/sandbox/harness";
 import { SANDBOX_IDENTITY, getSandboxIdentity, markSandboxLoaded } from "../src/sandbox/identity";
 import {
   DEFAULT_MEMORY_LIMIT_MB,
@@ -70,16 +70,76 @@ describe("async source gate", () => {
 });
 
 describe("guest harness source", () => {
-  it("defines test(), chainable expect(), and assert()", () => {
-    expect(HARNESS_SOURCE.includes("globalThis.test =")).toBe(true);
-    expect(HARNESS_SOURCE.includes("toEqual:")).toBe(true);
-    expect(HARNESS_SOURCE.includes("toBeTrue:")).toBe(true);
-    expect(HARNESS_SOURCE.includes("toBeCloseTo:")).toBe(true);
-    expect(HARNESS_SOURCE.includes("globalThis.assert =")).toBe(true);
+  it("locks test(), chainable expect(), and assert() onto the guest global", () => {
+    // H5: defineProperty-locked (non-writable, non-configurable), not the
+    // old overwritable `globalThis.test = ...` assignments.
+    expect(HARNESS_SOURCE.startsWith("(function makeHarness")).toBe(true);
+    expect(HARNESS_SOURCE.endsWith("(globalThis);")).toBe(true);
+    expect(HARNESS_SOURCE.includes('lock("test", testFn)')).toBe(true);
+    expect(HARNESS_SOURCE.includes('lock("expect", expectFn)')).toBe(true);
+    expect(HARNESS_SOURCE.includes('lock("assert", assertFn)')).toBe(true);
+    expect(HARNESS_SOURCE.includes("writable: false")).toBe(true);
+    expect(HARNESS_SOURCE.includes("configurable: false")).toBe(true);
+  });
+
+  it("keeps the records array OFF the guest global (no __tests to fabricate)", () => {
+    expect(HARNESS_SOURCE.includes("__tests")).toBe(false);
+    expect(HARNESS_SOURCE.includes("return records")).toBe(true);
   });
 
   it("harness source is itself sync-only (passes the gate)", () => {
     expect(findAsyncUsage(HARNESS_SOURCE)).toBe(null);
+  });
+});
+
+// H5 behavioral proofs against the REAL harness function (makeHarness is
+// self-contained, so specs run it directly — workerd forbids dynamic
+// codegen, so the SOURCE string itself is exercised live by
+// scripts/test-sandbox-live.mjs instead).
+describe("harness private test records (H5)", () => {
+  const run = (): { global: Record<string, unknown>; records: HarnessRecord[] } => {
+    const global: Record<string, unknown> = {};
+    const records = makeHarness(global);
+    return { global, records };
+  };
+
+  it("records real test results into the closure-private array", () => {
+    const { global, records } = run();
+    (global.test as (n: string, f: () => void) => void)("passing", () => {
+      expect(1).toBe(1);
+    });
+    (global.test as (n: string, f: () => void) => void)("failing", () => {
+      throw new RangeError("boom");
+    });
+    expect(records).toEqual([
+      { name: "passing", passed: true },
+      { name: "failing", passed: false, error: "RangeError: boom" },
+    ]);
+  });
+
+  it("the records array is unreachable from the guest global object", () => {
+    const { global } = run();
+    expect(global.__tests).toBeUndefined();
+    expect(Object.getOwnPropertyNames(global).sort()).toEqual(["assert", "expect", "test"]);
+  });
+
+  it("harness functions resist replacement (locked descriptors, silent no-op in sloppy code)", () => {
+    const { global, records } = run();
+    const desc = Object.getOwnPropertyDescriptor(global, "test");
+    expect(desc?.writable).toBe(false);
+    expect(desc?.configurable).toBe(false);
+    // Strict-mode assignment attempts (the sandbox evals guests with
+    // strict: true, and this transport is strict ESM too) throw a TypeError
+    // instead of replacing the harness — the real test() survives either
+    // way and no fabricated record can enter the private array.
+    expect(() => {
+      global.test = () => {
+        records.push({ name: "fabricated", passed: true });
+      };
+    }).toThrow(TypeError);
+    (global.test as (n: string, f: () => void) => void)("real", () => {});
+    expect(records).toEqual([{ name: "real", passed: true }]);
+    expect(() => Object.defineProperty(global, "test", { value: () => {} })).toThrow(TypeError);
   });
 });
 

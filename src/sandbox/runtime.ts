@@ -171,6 +171,8 @@ export class QuickJsSandboxRuntime implements SandboxRuntime {
     let status: ExecuteResult["status"] = "ok";
     let error: string | undefined;
     let result: unknown;
+    // H5: retained host-side handle to the harness's PRIVATE records array.
+    let testsHandle: QuickJSHandle | undefined;
     try {
       // Guardrails (SAND-02) BEFORE any guest code runs.
       context.runtime.setMemoryLimit(this.limits.memoryLimitBytes);
@@ -186,13 +188,16 @@ export class QuickJsSandboxRuntime implements SandboxRuntime {
       );
 
       injectConsole(context, logs);
+      // H5: the harness's completion value IS its private records array.
+      // Retain the handle — the only reference outside the harness closures —
+      // instead of reading a guest-writable global afterwards.
       const harnessResult = context.evalCode(HARNESS_SOURCE, "harness.js");
       if (harnessResult.error) {
         error = `harness setup failed: ${stringifyDump(context.dump(harnessResult.error))}`;
         harnessResult.error.dispose();
         status = "error";
       } else {
-        harnessResult.value.dispose();
+        testsHandle = harnessResult.value;
       }
 
       if (status === "ok") {
@@ -213,13 +218,12 @@ export class QuickJsSandboxRuntime implements SandboxRuntime {
         }
       }
 
-      // Tests registered BEFORE a guest throw still landed in __tests
-      // (test() runs fns at registration) — read them for feedback. Skipped
-      // on timeout: the guest aborted mid-flight; its state is not trustworthy.
-      if (status !== "timeout") {
-        const testsHandle = context.getProp(context.global, "__tests");
+      // Tests registered BEFORE a guest throw still landed in the private
+      // records (test() runs fns at registration) — read them for feedback.
+      // Skipped on timeout: the guest aborted mid-flight; its state is not
+      // trustworthy.
+      if (status !== "timeout" && testsHandle !== undefined) {
         const dumpedTests: unknown = context.dump(testsHandle);
-        testsHandle.dispose();
         if (Array.isArray(dumpedTests)) {
           for (const t of dumpedTests) {
             const entry = t as { name?: unknown; passed?: unknown; error?: unknown };
@@ -238,6 +242,16 @@ export class QuickJsSandboxRuntime implements SandboxRuntime {
       error = describeError(err);
       abortCount += 1;
     } finally {
+      // H5: release the retained records handle on every path (dump already
+      // released it on the read path; the timeout path disposes here).
+      if (testsHandle !== undefined) {
+        try {
+          testsHandle.dispose();
+        } catch {
+          // context may already be dying — nothing to salvage
+        }
+        testsHandle = undefined;
+      }
       // dispose() can abort EVEN WHEN eval did not (matrix row 8) — guard it
       // separately so the dispose exception cannot mask the real cause.
       try {
