@@ -55,6 +55,18 @@ const MEMORY_SPEC = 'const s = "x".repeat(268435456);\ns.length;\n';
 const ASYNC_FN_SPEC = "async function f() { return 1; }\nf();\n";
 const PROMISE_SPEC = "new Promise(function (resolve) { resolve(1); });\n";
 const POST_POISON_SPEC = 'test("survived", () => { expect(2 + 2).toEqual(4); });\n1';
+// v5 H5: fabricated evidence in the OLD guest-writable __tests global must
+// be ignored; the host reads the harness's closure-private records.
+const FABRICATE_SPEC = 'globalThis.__tests = [{ name: "fabricated", passed: true }];\ntest("real", () => { expect(1).toEqual(1); });\n2';
+// v5 H5: harness functions resist replacement (locked descriptors — strict
+// guests throw on reassignment instead of feeding the loop fake results).
+const REASSIGN_SPEC = "test = function () {};\n1";
+// v5 H6: NaN can never pass a structural assertion (was a false pass both ways).
+const NAN_SPEC = 'test("nan close", () => { expect(NaN).toBeCloseTo(42); });\ntest("nan equal", () => { expect(NaN).toEqual(null); });\n1';
+// v5 H9: BigInt results/console args survive HTTP serialization (was a 500).
+const BIGINT_SPEC = "console.log(1n);\n1n";
+// v5 H10: a 1 MB console string must retain at most the 8 KiB cap.
+const BIG_LOG_SPEC = 'console.log("x".repeat(1000000));\n1';
 // Transpiled TypeScript guest (ROADMAP SC5): harness-side ts.transpileModule
 // with the same config Phase 2 uses, then executed in the sandbox. The
 // in-worker transpile step feeding the loop lands with CORE-02 in Phase 4.
@@ -203,6 +215,68 @@ try {
     typeof thrown.json.data.error === "string" && thrown.json.data.error.includes("Error: boom"),
     "guest throw: error carries Error: boom",
     thrown.json.data.error,
+  );
+
+  // -- v5 H5: fabricated test evidence in guest globals is ignored --
+  const fabricate = await post("/sandbox/execute", JSON.stringify({ code: FABRICATE_SPEC }));
+  assert(
+    fabricate.status === 200 && fabricate.json.data.status === "ok",
+    "H5: fabricating guest still evaluates (status ok)",
+    fabricate.json.data,
+  );
+  assert(
+    fabricate.json.data.tests.length === 1 &&
+      fabricate.json.data.tests[0].name === "real" &&
+      fabricate.json.data.tests[0].passed === true,
+    "H5: host reads the PRIVATE records — 0 fabricated passes leak into the results",
+    fabricate.json.data.tests,
+  );
+  const reassign = await post("/sandbox/execute", JSON.stringify({ code: REASSIGN_SPEC }));
+  assert(
+    reassign.json.data.status === "error" &&
+      typeof reassign.json.data.error === "string" &&
+      /read-?only/i.test(reassign.json.data.error),
+    "H5: reassigning test() throws in strict guests (harness resists replacement)",
+    reassign.json.data,
+  );
+
+  // -- v5 H6: NaN never passes a structural assertion --
+  const nanCase = await post("/sandbox/execute", JSON.stringify({ code: NAN_SPEC }));
+  assert(
+    nanCase.json.data.status === "ok" &&
+      nanCase.json.data.tests.length === 2 &&
+      nanCase.json.data.tests.every((t) => t.passed === false),
+    "H6: expect(NaN).toBeCloseTo(42) and expect(NaN).toEqual(null) both FAIL (was false-pass x2)",
+    nanCase.json.data.tests,
+  );
+
+  // -- v5 H9: BigInt result + console args survive HTTP serialization --
+  const bigintRun = await post("/sandbox/execute", JSON.stringify({ code: BIGINT_SPEC }));
+  assert(
+    bigintRun.status === 200 &&
+      bigintRun.json.ok === true &&
+      bigintRun.json.data.status === "ok" &&
+      bigintRun.json.data.result === "1",
+    "H9: execute(1n) -> 200 with a stringified result (was a 500)",
+    bigintRun.json.data,
+  );
+  assert(
+    bigintRun.json.data.logs.length === 1 &&
+      bigintRun.json.data.logs[0].args[0] === "1",
+    "H9: console.log(1n) captured as a string (was a guest-visible serialization error)",
+    bigintRun.json.data.logs,
+  );
+
+  // -- v5 H10: the console cap bounds RETAINED bytes --
+  const bigLog = await post("/sandbox/execute", JSON.stringify({ code: BIG_LOG_SPEC }));
+  const retainedLen = bigLog.json.data.logs?.[0]?.args?.[0]?.length ?? -1;
+  assert(
+    bigLog.status === 200 &&
+      bigLog.json.data.logs.length === 1 &&
+      retainedLen >= 0 &&
+      retainedLen <= 8192,
+    "H10: console.log of 1MB retains at most the 8192-byte cap (was the full dump)",
+    retainedLen,
   );
 
   // -- Case 5 (matrix rows 1+2, ROADMAP SC1): while(true) -> structured timeout --
