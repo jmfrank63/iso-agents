@@ -483,8 +483,8 @@ async function legA() {
     // -- identity flip (LAST: the checks above did the lazy loading) --
     const flipped = await get(port, "/healthz");
     assert(
-      flipped.status === 200 && flipped.json.data.runtime.typechecker === "ts-rust@multi-run/c1b8218 (wasm)",
-      "A: flip: typechecker identity is fork-qualified ts-rust@multi-run/c1b8218 (wasm) after first check",
+      flipped.status === 200 && flipped.json.data.runtime.typechecker === "ts-rust@multi-run/359ee7a (wasm)",
+      "A: flip: typechecker identity is fork-qualified ts-rust@multi-run/359ee7a (wasm) after first check",
       flipped.json.data.runtime.typechecker,
     );
   } finally {
@@ -560,8 +560,8 @@ async function legB() {
     // identity is checker-level, stable across recycles
     const identity = await get(port, "/healthz");
     assert(
-      identity.json.data.runtime.typechecker === "ts-rust@multi-run/c1b8218 (wasm)",
-      "B: identity stable across recycles (ts-rust@multi-run/c1b8218 (wasm), checker-level not instance-level)",
+      identity.json.data.runtime.typechecker === "ts-rust@multi-run/359ee7a (wasm)",
+      "B: identity stable across recycles (ts-rust@multi-run/359ee7a (wasm), checker-level not instance-level)",
       identity.json.data.runtime.typechecker,
     );
   } finally {

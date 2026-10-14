@@ -9,7 +9,7 @@
 //   runTscHeld — the Phase 7 held-instance runtime (FORK-02): ONE lazy
 //                singleton Instance per isolate serves many ts_run calls
 //                via the multi-run fork's version flow (branch multi-run @
-//                c1b8218339d0 — 07-RESEARCH). Recycled after
+//                359ee7a339d0 — 07-RESEARCH). Recycled after
 //                RECYCLE_AFTER_RUNS (50, env-overridable) and on ANY throw:
 //                a WasiExit there is the panic-hook exit (normal exits —
 //                0 clean, 2 = diagnostics found, NOT an error — come back
@@ -43,14 +43,14 @@ import { createMemoryFileSystem, syncFiles, type MemoryFileSystem } from "./memf
 import type { WasmDiagnostic } from "./mapping";
 
 // Fork provenance (FORK-01): the committed artifact is built from the
-// multi-run fork — branch `multi-run` @ c1b8218339d0 on top of upstream
+// multi-run fork — branch `multi-run` @ 359ee7a339d0 on top of upstream
 // pin 569df52 (docs/ts-rust-wasm.md holds the full hashes + sha256). The
 // checker identity is fork-qualified: the fork changes observable behavior
 // (one instance, many runs), so pretending to still be the pin would be
 // dishonest.
 export const TS_RUST_BASE_PIN = "569df52";
 export const TS_RUST_FORK_BRANCH = "multi-run";
-export const TS_RUST_FORK_COMMIT = "c1b8218339d0";
+export const TS_RUST_FORK_COMMIT = "359ee7a339d0";
 
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
@@ -372,7 +372,7 @@ export interface RunTscOptions {
 
 // Vendored-artifact integrity assert (the TYPE-01 assert precedent): runs
 // once, on the first runTsc/runTscHeld call, and fails loudly if the
-// committed ts_rust.wasm does not match fork multi-run/c1b8218339d0's
+// committed ts_rust.wasm does not match fork multi-run/359ee7a339d0's
 // import/export surface (ABI frozen vs the pin — 07-RESEARCH; e.g. a stale
 // or corrupt copy replaced the artifact).
 let shapeChecked = false;

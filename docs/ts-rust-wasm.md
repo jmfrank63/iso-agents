@@ -15,13 +15,13 @@ checks.
 |---|---|
 | Upstream | pingdotgg/ts-rust (MIT — vendored artifact + adapted shim only; see upstream for the license text) |
 | Base pin | `569df525d3adfe55d31f1b027569a51953707480` ("docs(state): followups61 result", depth-1 clone 2026-10-13) |
-| Fork | local branch **`multi-run`** @ commit **`c1b8218339d0`** in the spike clone `/tmp/tsrust-spike/ts-rust` — local commit only, not pushed anywhere |
+| Fork | local branch **`multi-run`** @ commit **`359ee7a`** in the spike clone `/tmp/tsrust-spike/ts-rust` — local commit only, not pushed anywhere |
 | Fork diff | 5 files, **+327/-11** vs the pin: NEW `crates/ts_goport/src/program/multirun.rs` (203 lines — `enable()` marks the process a watch process so re-parses become freeable file versions, `install_program_version()` builds the frontend program + makes the program version from CURRENT, `end_run()` releases the version of two runs ago — exactly two versions are ever alive, `MultiRunHost` = the watch-host stat→mtime→cache parse server); `program.rs` (+2, module decl); `execute/execute_tsc.rs` (+11, `install_program` diverts to `multirun::install_program_version`, `perform_compilation` wraps the run's host); `ts_wasm/src/lib.rs` (+~100/-7, `multirun::enable()` before + `multirun::end_run()` after each `command_line`, `install_os_override` guarded by `os_override_installed()`, native 4-sequential-runs test); `ts_wasm/src/host.rs` (+11/-2, generation-stamped mtime test hook). **ABI FROZEN**: `ts_input`/`ts_run`/`ts_output`/`ts_output_len` unchanged; no `ts_reset` needed |
-| Artifact | `src/typecheck-wasm/ts_rust.wasm` — 5,150,781 bytes raw / 2,195,384 gzip (pin artifact was 5,125,434: +0.5%) |
-| sha256 | `9cd244ef87da4b399e9b7c408a68e0342b24569d6d126cda3599d0f19b878d06` |
+| Artifact | `src/typecheck-wasm/ts_rust.wasm` — 5,221,659 bytes raw / 2,195,384 gzip (pin artifact was 5,125,434: +0.5%) |
+| sha256 | `29d59885a6926f06846621d8ab06de1ec1a127009275dd37624f0c52f4d10a71` |
 | Built with | rustc/cargo 1.99.0 (stable-aarch64-unknown-linux-gnu, rustup minimal profile), target wasm32-wasip1, binaryen wasm-opt 132 (npm `binaryen@132`, local prefix) |
 | Build | `CI=1 bash scripts/wasm/build.sh` in the fork clone (2026-10-13, aarch64 Linux; wasm-opt MUST be on PATH — the first fork build attempt failed exactly there) |
-| npm status | **Unpublished; built from source at fork multi-run/c1b8218339d0 (base pin 569df52)** — nothing from upstream `npm/wasm` is on the registry |
+| npm status | **Unpublished; built from source at fork multi-run/359ee7a (base pin 569df52)** — nothing from upstream `npm/wasm` is on the registry |
 
 Fork validation (07-RESEARCH, all four gates): upstream `npm/wasm` suite 14/14 (`node --test
 npm/wasm/test/tsc.test.mjs`); `cargo test -p ts_wasm --lib` 2/2 incl. the new multi-run test
@@ -46,7 +46,7 @@ upgrade the build:
    failed exactly on a missing wasm-opt. (A global `npm i -g` may be blocked by prefix
    permissions; the local install is the documented workaround.)
 3. Check out the fork: reuse the spike clone — `git -C /tmp/tsrust-spike/ts-rust checkout
-   multi-run` (commit `c1b8218339d0`). If the clone is gone: `git clone --depth 1
+   multi-run` (commit `359ee7a`). If the clone is gone: `git clone --depth 1
    https://github.com/pingdotgg/ts-rust`, check out base pin `569df52`, re-apply the 5-file fork
    diff (inventory in Provenance above; +327/-11) as a new local `multi-run` commit, and RECORD
    the new commit hash — update this file with it.
@@ -65,7 +65,7 @@ upgrade the build:
    import/export surface on first use and fails loudly on a mismatched artifact).
 
 Toolchain-version sensitivity: upstream's docs quote ~4.2 MB for the module (Rust 1.98.1); Rust
-1.99.0 produced 5,150,781 bytes here (5,125,434 at the base pin). Record whichever rustc built
+1.99.0 produced 5,221,659 bytes here (5,125,434 at the base pin). Record whichever rustc built
 YOUR artifact.
 
 ## How the worker hosts it (WASM-01/02/03 + FORK-02)
@@ -130,5 +130,5 @@ YOUR artifact.
 - **Sync CPU-bound run**: spike-measured per request in workerd — cold ≈ 0.5–1.2 s, warm held
   ≈ 70–125 ms, instantiate 2–8 ms. Local `wrangler dev` does not enforce CPU limits;
   production would need a paid plan's 30 s ceiling. The prototype is local-only.
-- **Fork is local**: `multi-run` @ `c1b8218339d0` exists only in the spike clone — see Rebuild
+- **Fork is local**: `multi-run` @ `359ee7a` exists only in the spike clone — see Rebuild
   step 3 for the recovery path if `/tmp/tsrust-spike` is gone.

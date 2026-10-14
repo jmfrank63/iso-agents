@@ -16,7 +16,7 @@ Check it's alive:
 ```sh
 curl -s localhost:8787/healthz | jq
 # {ok:true, data:{status:"ok", runtime:{typechecker:"typescript@6.0.3 (in-isolate)"
-#  | "ts-rust@multi-run/c1b8218 (wasm)", sandbox:"quickjs-wasmfile-release-sync@0.32",
+#  | "ts-rust@multi-run/359ee7a (wasm)", sandbox:"quickjs-wasmfile-release-sync@0.32",
 #  agent:"mock-provider ready", ...}}}
 ```
 
@@ -87,7 +87,7 @@ npm run dev   # healthz agent key flips to "openai-compatible"
 
 ```sh
 npm run dev -- --var TSCHECKER:tsc-rs-wasm
-# healthz typechecker -> "ts-rust@multi-run/c1b8218 (wasm)"
+# healthz typechecker -> "ts-rust@multi-run/359ee7a (wasm)"
 # held instance: warm checks ~75-120ms (cold ~500ms); recycles after 50 runs
 #   (TSCHECKER_WASM_RECYCLE_AFTER env) or on panic; /typecheck response gains held stats
 ```
