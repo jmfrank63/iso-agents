@@ -18,6 +18,18 @@
 // records array. Specs exercise makeHarness directly (no dynamic codegen —
 // workerd forbids it), and the live sandbox harness proves the SOURCE path
 // end-to-end in real QuickJS.
+//
+// STRINGIFICATION CONTRACT (live-proven against wrangler's esbuild
+// keepNames): the bundled makeHarness body comes back carrying `__name(...)`
+// statements — the bundle's minify-name helper — so HARNESS_SOURCE wraps the
+// stringified function in an IIFE providing an identity __name shim (see
+// HARNESS_SOURCE below for the live-repro rationale).
+//
+// SHAPE CONTRACT: makeHarness must stay SELF-CONTAINED (no references
+// outside its own body) so its stringified form is safe to eval. Helpers are
+// function DECLARATIONS and object methods use SHORTHAND syntax — the two
+// shapes esbuild emits verbatim in the body (expression forms are rewritten
+// inline, which the shim below absorbs anyway).
 export interface HarnessRecord {
   name: string;
   passed: boolean;
@@ -26,13 +38,13 @@ export interface HarnessRecord {
 
 export function makeHarness(globalObject: object): HarnessRecord[] {
   const records: HarnessRecord[] = [];
-  const isNaNValue = function (value: unknown): boolean {
+  function isNaNValue(value: unknown): boolean {
     return typeof value === "number" && value !== value;
-  };
+  }
   // H6: structural equality without JSON-stringify's pitfalls — NaN never
   // equals anything (not even NaN), undefined !== a function, arrays and
   // plain objects compare recursively, functions only by reference.
-  const deepEqual = function (a: unknown, b: unknown): boolean {
+  function deepEqual(a: unknown, b: unknown): boolean {
     if (isNaNValue(a) || isNaNValue(b)) {
       return false;
     }
@@ -82,9 +94,9 @@ export function makeHarness(globalObject: object): HarnessRecord[] {
       }
     }
     return true;
-  };
-  const shown = function (value: unknown): string {
-    // JSON renders NaN/Infinity as null — show the truth instead (H6).
+  }
+  // JSON renders NaN/Infinity as null — show the truth instead (H6).
+  function shown(value: unknown): string {
     if (typeof value === "number" && !isFinite(value)) {
       return String(value);
     }
@@ -94,8 +106,8 @@ export function makeHarness(globalObject: object): HarnessRecord[] {
     } catch (e) {
       return String(value);
     }
-  };
-  const testFn = function (name: unknown, fn: () => void): void {
+  }
+  function testFn(name: unknown, fn: () => void): void {
     try {
       fn();
       records.push({ name: String(name), passed: true });
@@ -110,23 +122,23 @@ export function makeHarness(globalObject: object): HarnessRecord[] {
             : String(e),
       });
     }
-  };
-  const expectFn = function (actual: unknown) {
+  }
+  function expectFn(actual: unknown) {
     return {
-      toEqual: function (expected: unknown): void {
+      toEqual(expected: unknown): void {
         if (!deepEqual(actual, expected)) {
           throw new Error("expected " + shown(expected) + ", got " + shown(actual));
         }
       },
-      toBeTrue: function (msg?: string): void {
+      toBeTrue(msg?: string): void {
         if (actual !== true) {
           throw new Error(msg === undefined ? "expected true, got " + shown(actual) : msg);
         }
       },
       // H6: validates finite number operands and a non-negative finite
       // tolerance — the old `NaN > tolerance` comparison silently PASSED
-      // for NaN actuals (and NaN - 42 > tol is false the other way too).
-      toBeCloseTo: function (expected: number, eps?: number): void {
+      // for NaN actuals.
+      toBeCloseTo(expected: number, eps?: number): void {
         const tolerance = eps === undefined ? 1e-6 : eps;
         if (
           typeof actual !== "number" ||
@@ -148,24 +160,37 @@ export function makeHarness(globalObject: object): HarnessRecord[] {
         }
       },
     };
-  };
-  const assertFn = function (cond: unknown, msg?: string): void {
+  }
+  function assertFn(cond: unknown, msg?: string): void {
     if (!cond) {
       throw new Error(msg === undefined ? "assertion failed" : msg);
     }
-  };
-  const lock = function (name: string, fn: unknown): void {
+  }
+  function lock(name: string, fn: unknown): void {
     Object.defineProperty(globalObject, name, {
       value: fn,
       writable: false,
       enumerable: true,
       configurable: false,
     });
-  };
+  }
   lock("test", testFn);
   lock("expect", expectFn);
   lock("assert", assertFn);
   return records;
 }
 
-export const HARNESS_SOURCE = `(${makeHarness})(globalThis);`;
+// STRINGIFICATION CONTRACT (live-proven against wrangler's esbuild
+// keepNames): the bundled makeHarness source comes back decorated with
+// `__name(...)` statements — the bundle's minify-name helper, which does NOT
+// exist inside QuickJS (live repro: "ReferenceError: '__name' is not
+// defined" on every harness setup). The injected source therefore wraps the
+// stringified function in an IIFE that defines an identity __name shim
+// first. The shim lives inside the template string, which esbuild cannot
+// decorate back; the IIFE scope also keeps it off the guest global.
+export const HARNESS_SOURCE = [
+  "(function () {",
+  "  var __name = function (target, value) { return target; };",
+  `  return (${makeHarness})(globalThis);`,
+  "})();",
+].join("\n");

@@ -73,13 +73,17 @@ describe("guest harness source", () => {
   it("locks test(), chainable expect(), and assert() onto the guest global", () => {
     // H5: defineProperty-locked (non-writable, non-configurable), not the
     // old overwritable `globalThis.test = ...` assignments.
-    expect(HARNESS_SOURCE.startsWith("(function makeHarness")).toBe(true);
-    expect(HARNESS_SOURCE.endsWith("(globalThis);")).toBe(true);
+    expect(HARNESS_SOURCE.includes("makeHarness(globalObject)")).toBe(true);
+    expect(HARNESS_SOURCE.endsWith("(globalThis);\n})();")).toBe(true);
     expect(HARNESS_SOURCE.includes('lock("test", testFn)')).toBe(true);
     expect(HARNESS_SOURCE.includes('lock("expect", expectFn)')).toBe(true);
     expect(HARNESS_SOURCE.includes('lock("assert", assertFn)')).toBe(true);
     expect(HARNESS_SOURCE.includes("writable: false")).toBe(true);
     expect(HARNESS_SOURCE.includes("configurable: false")).toBe(true);
+  });
+
+  it("shims esbuild's keepNames helper (the bundled body carries __name decorators)", () => {
+    expect(HARNESS_SOURCE.includes("var __name = function (target, value)")).toBe(true);
   });
 
   it("keeps the records array OFF the guest global (no __tests to fabricate)", () => {
