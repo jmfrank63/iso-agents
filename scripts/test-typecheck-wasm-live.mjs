@@ -40,6 +40,8 @@ function assert(cond, label, detail) {
 
 const GREEN = "export const answer: number = 42;\n";
 const RED = 'const n: number = "not a number";\nconsole.log(n);\n';
+// v5 H1 repro: a nested source the old include:["*.ts"] silently skipped.
+const RED_NESTED = 'const x: number = "bad";\nconsole.log(x);\n';
 const SLUGIFY_ITER1 = `function slugify(input: string): string {
   const slug: number = input.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   return slug;
@@ -277,6 +279,18 @@ async function legA() {
         }),
       );
 
+    const shellCheckNested = (content, file) =>
+      post(
+        port,
+        "/agent/shell",
+        JSON.stringify({
+          commands: [
+            { op: "write", args: { file, content } },
+            { op: "typecheck" },
+          ],
+        }),
+      );
+
     const redShell = await shellCheck(RED);
     const redResult = redShell.json.data.results[1].result;
     const rd0 = redResult.diagnostics[0];
@@ -309,6 +323,31 @@ async function legA() {
     assert(
       fin.ok === true && fin.diagnostics.length === 0,
       "A: exactness: slugify final checks clean with 0 diagnostics (stale-parse control: iter1's parse was NOT served)",
+    );
+
+    // -- v5 H1: nested sources are CHECKED. The reviewer's finding: the old
+    // include:["*.ts"] matched /app's immediate directory only, so
+    // dir/guest.ts with a blatant type error returned ok:true. --
+    const nestedCheck = await shellCheckNested(RED_NESTED, "dir/guest.ts");
+    const nestedResult = nestedCheck.json.data.results[1].result;
+    const nd0 = nestedResult.diagnostics[0];
+    assert(
+      nestedResult.ok === false &&
+        nestedResult.diagnostics.length === 1 &&
+        nd0.code === 2322 &&
+        nd0.file === "/dir/guest.ts" &&
+        nd0.line === 1 &&
+        nd0.column === 7,
+      "H1: nested dir/guest.ts type error is flagged TS2322 (was silently ok:true)",
+      nd0,
+    );
+    // ...and the next root-level check is clean again (the stale nested file
+    // is removed from the held fs, and the files-list config cannot see it).
+    const afterNested = await shellCheck(GREEN);
+    assert(
+      afterNested.json.data.results[1].result.ok === true &&
+        afterNested.json.data.results[1].result.diagnostics.length === 0,
+      "H1: root-level check after the nested guest is clean (stale nested file removed)",
     );
 
     // -- the agent loop runs over the SELECTED checker (factory routing; the

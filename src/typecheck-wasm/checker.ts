@@ -16,6 +16,7 @@ import type {
   TypecheckResult,
   Typechecker,
 } from "../typecheck/index";
+import { assertValidGuestFile, canonicalGuestPath } from "./guard";
 import { mapWasmDiagnostics } from "./mapping";
 import {
   heldRunStats,
@@ -24,16 +25,27 @@ import {
   TS_RUST_FORK_COMMIT,
 } from "./shim";
 
-// The spike-proven project config seeded into every check (06-RESEARCH
-// probe requests): strict + es2022, wildcard include relative to /app.
-// CLI args add --noEmit; everything else is the module's embedded default.
-// `lib: ["es2022"]` mirrors the ts-js guest surface (core closure, no DOM):
-// the module's default lib chain includes DOM (`var console: Console`),
-// which TS2403-clashes with the seeded guest-globals.d.ts console (proven
-// live, 06-02 T2). Constant across every check — tsconfig and globals are
-// parse-reused by the held instance forever.
-const TSCONFIG_TEXT =
-  '{"compilerOptions":{"strict":true,"target":"es2022","lib":["es2022"]},"include":["*.ts"]}';
+// The spike-proven project config (06-RESEARCH probe requests): strict +
+// es2022, CLI args add --noEmit, everything else is the module's embedded
+// default. `lib: ["es2022"]` mirrors the ts-js guest surface (core closure,
+// no DOM): the module's default lib chain includes DOM
+// (`var console: Console`), which TS2403-clashes with the seeded
+// guest-globals.d.ts console (proven live, 06-02 T2).
+//
+// v5 H1: the project roots are an EXPLICIT files list (every submitted
+// source + the trusted globals), not the old include: ["*.ts"] wildcard —
+// the wildcard matched /app's immediate directory only, so a nested
+// /app/dir/guest.ts was silently never checked (review finding 1). The
+// text is a pure function of the file-name set: identical sets produce
+// byte-identical configs, so the held instance's parse cache still reuses
+// tsconfig across unchanged checks; only a changed file set re-parses it
+// (a ~100-byte JSON file).
+function projectTsconfig(fileNames: string[]): string {
+  return JSON.stringify({
+    compilerOptions: { strict: true, target: "es2022", lib: ["es2022"] },
+    files: fileNames,
+  });
+}
 
 export class TscRsWasmTypechecker implements Typechecker {
   // Fork-qualified identity (FORK-01): the fork changes observable
@@ -49,15 +61,21 @@ export class TscRsWasmTypechecker implements Typechecker {
     // Repo paths are rooted ("/guest.ts"); the module's project root is
     // /app (the tsconfig home) — guests are synced one level down and
     // diagnostics are mapped back (mapping.ts) so reported files stay
-    // byte-identical across checker implementations. syncHeldFiles re-
-    // stamps changed files and REMOVES files this check no longer has.
-    const wasmFiles = new Map<string, string>([["/app/tsconfig.json", TSCONFIG_TEXT]]);
+    // byte-identical across checker implementations. The guard throws
+    // GuestFileError on a non-.ts path BEFORE anything is seeded (H2's
+    // HTTP layer maps it to 400; the agent loop treats it as an internal
+    // error — no entry point bypasses the seed guard).
+    const guestNames = [...files.keys()].map(assertValidGuestFile);
+    const seededNames = [...new Set([...guestNames, "guest-globals.d.ts"])].sort();
+    const wasmFiles = new Map<string, string>([
+      ["/app/tsconfig.json", projectTsconfig(seededNames)],
+    ]);
     for (const [name, content] of files) {
-      wasmFiles.set(`/app${name.startsWith("/") ? name : `/${name}`}`, content);
+      wasmFiles.set(`/app${canonicalGuestPath(name)}`, content);
     }
-    // Ambient globals (test/expect/assert/console): include ["*.ts"] picks
-    // the .d.ts up; without this seed every test() guest drowns in TS2593
-    // (same rootName lesson as the ts-js checker and the 05-01 bench).
+    // Ambient globals (test/expect/assert/console): the seeded files list
+    // picks the .d.ts up; without this seed every test() guest drowns in
+    // TS2593 (same rootName lesson as the ts-js checker and the 05-01 bench).
     wasmFiles.set("/app/guest-globals.d.ts", GUEST_GLOBALS_TEXT);
     const t0 = performance.now();
     const run = runTscHeld(
