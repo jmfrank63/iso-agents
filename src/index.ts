@@ -1,5 +1,7 @@
 import { runRegistry } from "./runs";
 import { getTypechecker, getTypecheckerIdentity } from "./typecheck";
+import { parseTSChecker } from "./typecheck/selection";
+import { GuestFileError, assertValidGuestFile } from "./typecheck-wasm/guard";
 import { transpileGuest } from "./typecheck/transpile";
 import { getSandboxRuntime } from "./sandbox/runtime";
 import { getSandboxIdentity } from "./sandbox/identity";
@@ -107,6 +109,27 @@ async function parseJsonBody(request: Request): Promise<unknown> {
   }
 }
 
+// v5 H2: under TSCHECKER=tsc-rs-wasm the checker owns /app/tsconfig.json and
+// /app/guest-globals.d.ts; a guest file with either name used to overwrite /
+// be shadowed by the compiler-owned seed. Validated AFTER canonicalization,
+// BEFORE the (cold ~500 ms) wasm check runs, as 400 bad_request. ts-js mode
+// is untouched: there the tsconfig name simply checks as a red TS parse.
+function assertWasmGuestFiles(files: Map<string, string>, env: Env): void {
+  if (parseTSChecker(env) !== "tsc-rs-wasm") {
+    return;
+  }
+  for (const name of files.keys()) {
+    try {
+      assertValidGuestFile(name);
+    } catch (err) {
+      if (err instanceof GuestFileError) {
+        throw new HttpError(400, "bad_request", err.message);
+      }
+      throw err;
+    }
+  }
+}
+
 // Phase 1 sandbox limits use this exact shape (src/sandbox/limits.ts).
 function parseOptionalPositiveInt(raw: string | undefined, fallback: number): number {
   if (raw === undefined) return fallback;
@@ -161,6 +184,7 @@ async function handleTypecheck(request: Request, env: Env): Promise<Response> {
       content as string,
     ]),
   );
+  assertWasmGuestFiles(files, env);
   const checker = getTypechecker(env);
   const results: Array<{ run: number; ms: number; ok: boolean }> = [];
   for (let i = 1; i <= runs; i++) {
@@ -318,6 +342,11 @@ async function handleShell(request: Request, env: Env): Promise<Response> {
     );
   } catch (err) {
     if (err instanceof ShellBadRequestError) {
+      throw new HttpError(400, "bad_request", err.message);
+    }
+    // v5 H2: the wasm checker's seed guard rejects compiler-owned guest
+    // paths (the typecheck op checks the session VFS) — same 400 class.
+    if (err instanceof GuestFileError) {
       throw new HttpError(400, "bad_request", err.message);
     }
     throw err;

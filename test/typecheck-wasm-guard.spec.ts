@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   GuestFileError,
+  RESERVED_GUEST_PATHS,
   assertValidGuestFile,
   canonicalGuestPath,
   isGuestSourcePath,
@@ -46,5 +47,26 @@ describe("guest extension validation (H1)", () => {
     } catch (err) {
       expect((err as Error).message).toContain("/evil.json");
     }
+  });
+});
+
+describe("compiler-owned path collisions (H2)", () => {
+  it("rejects guest tsconfig.json after canonicalization (the noCheck bypass)", () => {
+    expect(() => assertValidGuestFile("tsconfig.json")).toThrow(GuestFileError);
+    expect(() => assertValidGuestFile("/tsconfig.json")).toThrow(GuestFileError);
+  });
+
+  it("rejects guest guest-globals.d.ts (trusted declarations must not be shadowable)", () => {
+    expect(() => assertValidGuestFile("guest-globals.d.ts")).toThrow(GuestFileError);
+    expect(() => assertValidGuestFile("/guest-globals.d.ts")).toThrow(GuestFileError);
+  });
+
+  it("non-reserved .ts/.d.ts paths still pass at any depth", () => {
+    expect(assertValidGuestFile("dir/tsconfig-helper.ts")).toBe("/dir/tsconfig-helper.ts");
+    expect(assertValidGuestFile("ambient/globals.d.ts")).toBe("/ambient/globals.d.ts");
+  });
+
+  it("the reserved set contains exactly the two seeded compiler paths", () => {
+    expect([...RESERVED_GUEST_PATHS].sort()).toEqual(["/guest-globals.d.ts", "/tsconfig.json"]);
   });
 });

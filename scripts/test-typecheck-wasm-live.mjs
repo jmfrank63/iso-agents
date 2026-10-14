@@ -350,6 +350,43 @@ async function legA() {
       "H1: root-level check after the nested guest is clean (stale nested file removed)",
     );
 
+    // -- v5 H2: compiler-owned paths are rejected with 400 bad_request.
+    // The reviewer's finding: guest tsconfig.json {"noCheck":true}
+    // overwrote the seeded config -> clean verdict with zero checking;
+    // guest guest-globals.d.ts was shadowed by the trusted seed. --
+    const tsconfigPost = await post(
+      port,
+      "/typecheck",
+      JSON.stringify({ files: { "tsconfig.json": '{"compilerOptions":{"noCheck":true}}' } }),
+    );
+    assert(
+      tsconfigPost.status === 400 &&
+        tsconfigPost.json.ok === false &&
+        tsconfigPost.json.error.code === "bad_request",
+      "H2: guest tsconfig.json -> 400 bad_request (not a clean verdict)",
+      tsconfigPost.json,
+    );
+    const globalsPost = await post(
+      port,
+      "/typecheck",
+      JSON.stringify({ files: { "guest-globals.d.ts": "declare var totallyFine: number;\n" } }),
+    );
+    assert(
+      globalsPost.status === 400 && globalsPost.json.error.code === "bad_request",
+      "H2: guest guest-globals.d.ts -> 400 bad_request",
+      globalsPost.json,
+    );
+    const extPost = await post(
+      port,
+      "/typecheck",
+      JSON.stringify({ files: { "guest.txt": "const x = 1;\n" } }),
+    );
+    assert(
+      extPost.status === 400 && extPost.json.error.code === "bad_request",
+      "H2: non-source extension -> 400 bad_request (guard runs at the HTTP layer too)",
+      extPost.json,
+    );
+
     // -- the agent loop runs over the SELECTED checker (factory routing; the
     // loop, /agent/shell and /typecheck share the one getTypechecker(env) seam) --
     const slug = await post(port, "/agent/run", JSON.stringify({ task: SLUG_TASK, spec: SLUG_SPEC }));
