@@ -7,7 +7,7 @@
 
 ## Current Focus
 
-**Milestone v6: Phase 9 — incremental recheck (amortize the ~80ms construction floor; target ≤40ms warm, stretch ≤20ms; stepped: instrument → deepest reuse → E1 rides along)** (v5 = Sol-review hardening + upstream PR #85 + launch runbook)
+**Milestone v6: complete** — six milestones shipped (v6 = warm 5-8ms changed-guest / ~1ms identical: V8-JS parity) (v5 = Sol-review hardening + upstream PR #85 + launch runbook)
 
 ## Position
 
