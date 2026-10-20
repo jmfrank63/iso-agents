@@ -45,3 +45,103 @@ export function assertValidGuestFile(name: string): string {
   }
   return canonical;
 }
+
+// v6 calibration (live cliff-search against the shipped module): the
+// checker's parser recurses per expression-nesting level and the wasm
+// build's stack overflows somewhere between depth 600 (ok, 203 ms) and
+// depth 1200 (uncatchable 500) — raw line count is irrelevant (4000 flat
+// lines check fine in ~70 ms; a 3000-term `a+b+…` chain is what crashed
+// the first time, at recursion depth ~3000). The limit sits 2.5x under
+// the cliff and far above real-world code (typical max nesting < 50).
+// Depth, not lines, is the guard metric.
+export const WASM_GUEST_LIMITS = {
+  maxNestingDepth: 256,
+  maxSourceBytes: 262144,
+} as const;
+
+export class WasmGuestTooComplexError extends Error {}
+
+// Longest stretch of nesting over () [] {} in `source`, ignoring brackets
+// inside strings, template literals, and comments — with `${` holes in
+// templates scanned as code (the `}` that closes a hole returns to the
+// template). Contexts live on one stack: "(", "[", "{" and "`" (template).
+// Known blind spot: regex literals are scanned as code, so unbalanced
+// brackets inside a regex can skew the count in either direction — the
+// runtime catch (recycle on throw) is the backstop for underestimates.
+export function scanMaxNestingDepth(source: string): number {
+  let max = 0;
+  let depth = 0;
+  const stack: string[] = [];
+  let state: "code" | "line" | "block" | "single" | "double" | "template" = "code";
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1];
+    if (state === "line") {
+      if (ch === "\n") state = "code";
+    } else if (state === "block") {
+      if (ch === "*" && next === "/") {
+        state = "code";
+        i++;
+      }
+    } else if (state === "single" || state === "double") {
+      if (ch === "\\") i++;
+      else if ((state === "single" && ch === "'") || (state === "double" && ch === '"')) state = "code";
+    } else if (state === "template") {
+      if (ch === "\\") i++;
+      else if (ch === "`") {
+        stack.pop();
+        state = "code";
+      } else if (ch === "$" && next === "{") {
+        stack.push("{");
+        depth++;
+        if (depth > max) max = depth;
+        state = "code";
+        i++;
+      }
+    } else {
+      if (ch === "/" && next === "/") {
+        state = "line";
+        i++;
+      } else if (ch === "/" && next === "*") {
+        state = "block";
+        i++;
+      } else if (ch === "'") state = "single";
+      else if (ch === '"') state = "double";
+      else if (ch === "`") {
+        stack.push("`");
+        state = "template";
+      } else if (ch === "(" || ch === "[" || ch === "{") {
+        stack.push(ch);
+        depth++;
+        if (depth > max) max = depth;
+      } else if (ch === ")" || ch === "]" || ch === "}") {
+        const top = stack.pop();
+        if (top && top !== "`") depth--;
+        if (top === "{" && stack[stack.length - 1] === "`") {
+          stack.pop();
+          state = "template";
+        }
+      }
+    }
+  }
+  return max;
+}
+
+// Throws WasmGuestTooComplexError when a guest exceeds the calibrated
+// wasm-stack limits. The HTTP layer maps it to 400 bad_request with the
+// ts-js fallback hint; the checker's seed calls it so no entry point
+// bypasses it (the agent loop treats it as a guest error and feeds it
+// back to the LLM).
+export function assertGuestWithinWasmLimits(name: string, content: string): void {
+  if (content.length > WASM_GUEST_LIMITS.maxSourceBytes) {
+    throw new WasmGuestTooComplexError(
+      `guest file ${name} is ${content.length} bytes; the wasm checker accepts up to ${WASM_GUEST_LIMITS.maxSourceBytes} (use TSCHECKER=ts-js for large sources)`,
+    );
+  }
+  const depth = scanMaxNestingDepth(content);
+  if (depth > WASM_GUEST_LIMITS.maxNestingDepth) {
+    throw new WasmGuestTooComplexError(
+      `guest file ${name} nests ${depth} deep; the wasm checker accepts up to ${WASM_GUEST_LIMITS.maxNestingDepth} (use TSCHECKER=ts-js for deeply nested sources)`,
+    );
+  }
+}

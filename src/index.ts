@@ -1,7 +1,7 @@
 import { runRegistry } from "./runs";
 import { getTypechecker, getTypecheckerIdentity } from "./typecheck";
 import { parseTSChecker } from "./typecheck/selection";
-import { GuestFileError, assertValidGuestFile } from "./typecheck-wasm/guard";
+import { GuestFileError, WasmGuestTooComplexError, assertGuestWithinWasmLimits, assertValidGuestFile } from "./typecheck-wasm/guard";
 import { transpileGuest } from "./typecheck/transpile";
 import { getSandboxRuntime } from "./sandbox/runtime";
 import { getSandboxIdentity } from "./sandbox/identity";
@@ -118,11 +118,12 @@ function assertWasmGuestFiles(files: Map<string, string>, env: Env): void {
   if (parseTSChecker(env) !== "tsc-rs-wasm") {
     return;
   }
-  for (const name of files.keys()) {
+  for (const [name, content] of files) {
     try {
       assertValidGuestFile(name);
+      assertGuestWithinWasmLimits(name, content);
     } catch (err) {
-      if (err instanceof GuestFileError) {
+      if (err instanceof GuestFileError || err instanceof WasmGuestTooComplexError) {
         throw new HttpError(400, "bad_request", err.message);
       }
       throw err;

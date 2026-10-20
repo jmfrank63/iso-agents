@@ -16,7 +16,7 @@ import type {
   TypecheckResult,
   Typechecker,
 } from "../typecheck/index";
-import { assertValidGuestFile, canonicalGuestPath } from "./guard";
+import { assertGuestWithinWasmLimits, assertValidGuestFile, canonicalGuestPath } from "./guard";
 import { mapWasmDiagnostics } from "./mapping";
 import {
   heldRunStats,
@@ -69,6 +69,10 @@ export class TscRsWasmTypechecker implements Typechecker {
     // GuestFileError on a non-.ts path BEFORE anything is seeded (H2's
     // HTTP layer maps it to 400; the agent loop treats it as an internal
     // error — no entry point bypasses the seed guard).
+    for (const [name, content] of files) {
+      assertValidGuestFile(name);
+      assertGuestWithinWasmLimits(name, content);
+    }
     const guestNames = [...files.keys()].map(assertValidGuestFile);
     const seededNames = [
       ...new Set([...guestNames, "guest-globals.d.ts"].map((n) => `/app${canonicalGuestPath(n)}`)),
