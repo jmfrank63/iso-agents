@@ -7,7 +7,7 @@
 
 ## Current Focus
 
-**Milestone v6: complete** — six milestones shipped (v6 = warm 5-8ms changed-guest / ~1ms identical: V8-JS parity) (v5 = Sol-review hardening + upstream PR #85 + launch runbook)
+**Milestone v7: complete** — PR #85 amended (review fixes + speedup, HEAD 6cf7c19), PR body corrected, upstream engaged (comment + tracker #99 confirmed upstream) (v5 = Sol-review hardening + upstream PR #85 + launch runbook)
 
 ## Position
 

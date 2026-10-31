@@ -85,6 +85,13 @@ test("trims and collapses separators", () => { expect(slugify("  A -- B  ")).toE
 const DEEP_NESTED_GUEST =
   "const deep: " + "{ v: ".repeat(20000) + "number" + " }".repeat(20000) + " = { v: 0 } as never;\n";
 
+// Bracket depth 1 — slips the static complexity guard by design — but the
+// parser recurses once per `+`, so this exhausts the wasm stack at runtime
+// (upstream #99): the runtime recycle net's trigger.
+const OPERATOR_CHAIN_GUEST =
+  "export const t: number = " + Array.from({ length: 5000 }, (_, i) => `v${i}`).join("+") + ";\n" +
+  Array.from({ length: 5000 }, (_, i) => `const v${i}: number = ${i};`).join("\n") + "\n";
+
 async function freePort() {
   return new Promise((resolve, reject) => {
     const srv = createServer();
@@ -224,8 +231,8 @@ async function legA() {
       "A: green: all three runs ok (clean verdict via the held wasm checker)",
     );
     assert(
-      green.json.data.results.every((r) => r.ms > 0 && Number.isFinite(r.ms)),
-      "A: green: every ms positive and finite",
+      green.json.data.results.every((r) => r.ms >= 0 && Number.isFinite(r.ms)),
+      "A: green: every ms finite (identical reruns may replay at ~0 ms via the fingerprint cache)",
     );
     const held1 = green.json.data.held;
     assert(
@@ -483,8 +490,8 @@ async function legA() {
     // -- identity flip (LAST: the checks above did the lazy loading) --
     const flipped = await get(port, "/healthz");
     assert(
-      flipped.status === 200 && flipped.json.data.runtime.typechecker === "ts-rust@multi-run-incr/79ffdb0 (wasm)",
-      "A: flip: typechecker identity is fork-qualified ts-rust@multi-run-incr/79ffdb0 (wasm) after first check",
+      flipped.status === 200 && flipped.json.data.runtime.typechecker === "ts-rust@multi-run/6cf7c19 (wasm)",
+      "A: flip: typechecker identity is fork-qualified ts-rust@multi-run/6cf7c19 (wasm) after first check",
       flipped.json.data.runtime.typechecker,
     );
   } finally {
@@ -540,10 +547,10 @@ async function legB() {
     // -- recycle-on-error (07-RESEARCH): the stack-exhausting guest yields
     // the structured 500 envelope; the shim drops the instance; the NEXT
     // check is correct on the fresh one. --
-    const boom = await post(port, "/typecheck", JSON.stringify({ files: { "guest.ts": DEEP_NESTED_GUEST }, runs: 1 }));
+    const boom = await post(port, "/typecheck", JSON.stringify({ files: { "guest.ts": OPERATOR_CHAIN_GUEST }, runs: 1 }));
     assert(
       boom.status === 500 && boom.json.ok === false,
-      "B: error guest: structured 500 envelope (host stack exhausted through the ts_host re-entry)",
+      "B: error guest: structured 500 envelope (binary-operator chain exhausts the wasm stack past the depth guard's reach)",
       boom.status,
     );
     const r4 = await check();
@@ -560,8 +567,8 @@ async function legB() {
     // identity is checker-level, stable across recycles
     const identity = await get(port, "/healthz");
     assert(
-      identity.json.data.runtime.typechecker === "ts-rust@multi-run-incr/79ffdb0 (wasm)",
-      "B: identity stable across recycles (ts-rust@multi-run-incr/79ffdb0 (wasm), checker-level not instance-level)",
+      identity.json.data.runtime.typechecker === "ts-rust@multi-run/6cf7c19 (wasm)",
+      "B: identity stable across recycles (ts-rust@multi-run/6cf7c19 (wasm), checker-level not instance-level)",
       identity.json.data.runtime.typechecker,
     );
   } finally {
