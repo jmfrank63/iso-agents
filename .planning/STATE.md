@@ -7,7 +7,9 @@
 
 ## Current Focus
 
-**Milestone v9: complete (Luna audit residuals closed: constant-mtime test, incremental wrap, lifecycle contract, hash-once; PR #85 @ c6b29c0, body softened per audit)**
+**Milestone v10: complete (set_thread_program contract concern resolved via enter_program scope refactor; parse reuse counter-asserted; PR #85 @ 5ada636)**
+
+Previous: milestone v9 (Luna audit residuals closed: constant-mtime test, incremental wrap, lifecycle contract, hash-once; PR #85 @ c6b29c0, body softened per audit)**
 
 Previous: milestone v8 (PR #85 rebased onto upstream R219 main; PR state: awaiting maintainer re-review/CI approval — CodeRabbit resolved, CHANGES_REQUESTED items addressed at 6cf7c19/d124fd8)**
 
