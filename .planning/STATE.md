@@ -7,7 +7,9 @@
 
 ## Current Focus
 
-**Milestone v7: complete** — PR #85 amended (review fixes + speedup, HEAD 6cf7c19), PR body corrected, upstream engaged (comment + tracker #99 confirmed upstream) (v5 = Sol-review hardening + upstream PR #85 + launch runbook)
+**Milestone v8: complete (PR #85 rebased onto upstream R219 main; PR state: awaiting maintainer re-review/CI approval — CodeRabbit resolved, CHANGES_REQUESTED items addressed at 6cf7c19/d124fd8)**
+
+Previous: milestone v7 — PR #85 amended (review fixes + speedup, HEAD 6cf7c19), PR body corrected, upstream engaged (comment + tracker #99 confirmed upstream) (v5 = Sol-review hardening + upstream PR #85 + launch runbook)
 
 ## Position
 

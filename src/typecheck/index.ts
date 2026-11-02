@@ -25,7 +25,7 @@ export interface TypecheckResult {
 // TsTypechecker (pure-JS typescript@6.0.3, the default), TranspileOnly
 // (the Phase 2 seam proof), and TscRsWasmTypechecker (the real Rust
 // checker, vendored as src/typecheck-wasm/ts_rust.wasm from the multi-run
-// fork — branch multi-run @ 6cf7c19aab04969e8408c7b206703f5b57993859 of upstream pin 569df52 —
+// fork — branch multi-run @ d124fd86f of upstream pin 569df52 —
 // unpublished on npm; see docs/ts-rust-wasm.md). The agent loop
 // (Phase 4), /agent/shell and the /typecheck benchmark depend on
 // `Typechecker`, never on a concrete checker — swapping implementations
