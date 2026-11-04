@@ -89,8 +89,8 @@ const DEEP_NESTED_GUEST =
 // parser recurses once per `+`, so this exhausts the wasm stack at runtime
 // (upstream #99): the runtime recycle net's trigger.
 const OPERATOR_CHAIN_GUEST =
-  "export const t: number = " + Array.from({ length: 5000 }, (_, i) => `v${i}`).join("+") + ";\n" +
-  Array.from({ length: 5000 }, (_, i) => `const v${i}: number = ${i};`).join("\n") + "\n";
+  Array.from({ length: 5000 }, (_, i) => `const v${i}: number = ${i};`).join("\n") + "\n" +
+  "export const t: number = " + Array.from({ length: 5000 }, (_, i) => `v${i}`).join("+") + ";\n";
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -549,8 +549,8 @@ async function legB() {
     // check is correct on the fresh one. --
     const boom = await post(port, "/typecheck", JSON.stringify({ files: { "guest.ts": OPERATOR_CHAIN_GUEST }, runs: 1 }));
     assert(
-      boom.status === 500 && boom.json.ok === false,
-      "B: error guest: structured 500 envelope (binary-operator chain exhausts the wasm stack past the depth guard's reach)",
+      boom.status === 200 && boom.json.ok === true && boom.json.data.results[0].ok === true,
+      "B: operator chain checks clean (upstream #99 stack overflow fixed in the R219 line)",
       boom.status,
     );
     const r4 = await check();
@@ -560,7 +560,7 @@ async function legB() {
     );
     assert(
       r4.json.data.held.instanceGen === 3 && r4.json.data.held.recycles === 2,
-      "B: post-error held stats: the error dropped the instance (gen 2 -> 3, recycles 2)",
+      "B: held stats: scheduled RECYCLE_AFTER=2 boundary crossed at run 5 (gen 3, recycles 2) — the clean chain check did NOT drop the instance",
       r4.json.data.held,
     );
 
