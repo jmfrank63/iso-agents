@@ -7,7 +7,9 @@
 
 ## Current Focus
 
-**Milestone v10: complete (set_thread_program contract concern resolved via enter_program scope refactor; parse reuse counter-asserted; PR #85 @ 5ada636)**
+**Milestone v11: complete (PR #85 MERGEABLE at 6281c42 on upstream 91f3d021c; #99 overflow no longer reproduces — confirmation posted upstream)**
+
+Previous: milestone v10 (set_thread_program contract concern resolved via enter_program scope refactor; parse reuse counter-asserted; PR #85 @ 5ada636)**
 
 Previous: milestone v9 (Luna audit residuals closed: constant-mtime test, incremental wrap, lifecycle contract, hash-once; PR #85 @ c6b29c0, body softened per audit)**
 
